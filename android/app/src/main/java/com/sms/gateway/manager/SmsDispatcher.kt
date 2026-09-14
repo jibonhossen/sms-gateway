@@ -25,15 +25,22 @@ object SmsDispatcher {
 
         val smsManager = getSmsManagerForSlot(context, simSlot)
 
+        val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+
         // Sent PendingIntent (Cellular handoff)
         val sentIntent = PendingIntent.getBroadcast(
             context,
             messageId.hashCode(),
             Intent("com.sms.gateway.SMS_SENT").apply {
                 data = Uri.parse("sms://$messageId")
+                putExtra("message_id", messageId)
                 setPackage(context.packageName)
             },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            flag
         )
 
         // Delivery PendingIntent (Carrier SMSC DLR)
@@ -42,9 +49,10 @@ object SmsDispatcher {
             messageId.hashCode(),
             Intent("com.sms.gateway.SMS_DELIVERED").apply {
                 data = Uri.parse("sms://$messageId")
+                putExtra("message_id", messageId)
                 setPackage(context.packageName)
             },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            flag
         )
 
         val parts = smsManager.divideMessage(messageText)
@@ -54,13 +62,23 @@ object SmsDispatcher {
         Log.d(TAG, "Dispatching SMS $messageId in ${parts.size} part(s) via SIM slot $simSlot to $phoneNumber")
 
         try {
-            smsManager.sendMultipartTextMessage(
-                phoneNumber,
-                null,
-                parts,
-                sentIntents,
-                deliveredIntents
-            )
+            if (parts.size <= 1) {
+                smsManager.sendTextMessage(
+                    phoneNumber,
+                    null,
+                    messageText,
+                    sentIntent,
+                    deliveredIntent
+                )
+            } else {
+                smsManager.sendMultipartTextMessage(
+                    phoneNumber,
+                    null,
+                    parts,
+                    sentIntents,
+                    deliveredIntents
+                )
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Direct transmission failure", e)
             SupabaseManager.reportSmsResult(
@@ -72,18 +90,31 @@ object SmsDispatcher {
     }
 
     private fun getSmsManagerForSlot(context: Context, simSlot: Int?): SmsManager {
-        if (simSlot != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (simSlot != null) {
             try {
                 val subManager = context.getSystemService(SubscriptionManager::class.java)
-                val subInfo = subManager.getActiveSubscriptionInfoForSimSlotIndex(simSlot)
+                val subInfo = subManager?.getActiveSubscriptionInfoForSimSlotIndex(simSlot)
                 if (subInfo != null) {
-                    return context.getSystemService(SmsManager::class.java)
-                        .createForSubscriptionId(subInfo.subscriptionId)
+                    val subId = subInfo.subscriptionId
+                    Log.d(TAG, "Selected subId $subId for SIM slot $simSlot (${subInfo.displayName ?: subInfo.carrierName})")
+                    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        SmsManager.getSmsManagerForSubscriptionId(subId)
+                    }
+                } else {
+                    Log.w(TAG, "No active subscription found for SIM slot $simSlot")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not acquire subscription for SIM slot $simSlot, using default", e)
             }
         }
-        return SmsManager.getDefault()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.getSystemService(SmsManager::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            SmsManager.getDefault()
+        }
     }
 }

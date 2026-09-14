@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.telephony.SubscriptionManager
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -54,6 +55,26 @@ class MainActivity : AppCompatActivity() {
         requestBatteryExemption()
         setupListeners()
         updateUi()
+        checkPairingIntent(intent)
+
+        if (GatewayApp.instance.isPaired) {
+            SmsGatewayService.start(this)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        checkPairingIntent(intent)
+    }
+
+    private fun checkPairingIntent(intent: Intent?) {
+        var pairingData = intent?.getStringExtra("pairing_data")
+        if (!pairingData.isNullOrBlank()) {
+            if (pairingData.startsWith("b64:")) {
+                pairingData = String(android.util.Base64.decode(pairingData.removePrefix("b64:"), android.util.Base64.DEFAULT))
+            }
+            handleQrScanned(pairingData)
+        }
     }
 
     override fun onResume() {
@@ -83,9 +104,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleQrScanned(jsonStr: String) {
+        Log.d("MainActivity", "handleQrScanned called with: $jsonStr")
         lifecycleScope.launch {
             try {
                 val payload = Json.decodeFromString<QrPairingPayload>(jsonStr)
+                Log.d("MainActivity", "Decoded payload: code=${payload.pairingCode}, url=${payload.url}")
                 val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
                 val rawSecret = UUID.randomUUID().toString()
 
@@ -105,6 +128,7 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 if (pairingResult != null) {
+                    Log.d("MainActivity", "Pairing successful! Device ID: ${pairingResult.deviceId}")
                     GatewayApp.instance.supabaseUrl = payload.url
                     GatewayApp.instance.supabaseAnonKey = payload.anonKey
                     GatewayApp.instance.deviceId = pairingResult.deviceId
@@ -117,9 +141,11 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "Paired with ${pairingResult.orgName}!", Toast.LENGTH_SHORT).show()
                     updateUi()
                 } else {
+                    Log.e("MainActivity", "Pairing returned null - session might be invalid or expired")
                     Toast.makeText(this@MainActivity, "Pairing failed. QR code may be expired.", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
+                Log.e("MainActivity", "Error handling pairing data", e)
                 Toast.makeText(this@MainActivity, "Invalid QR code: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }

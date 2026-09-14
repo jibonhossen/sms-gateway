@@ -198,6 +198,11 @@ create policy "Org members can view inbound messages"
   on inbound_messages for all
   using (organization_id in (select get_user_org_ids()));
 
+create policy "Devices can insert inbound messages"
+  on inbound_messages for insert
+  to anon, authenticated
+  with check (true);
+
 create policy "Org members can manage API keys"
   on api_keys for all
   using (organization_id in (select get_user_org_ids()));

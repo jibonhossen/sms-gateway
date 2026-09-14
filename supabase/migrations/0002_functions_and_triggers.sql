@@ -23,6 +23,7 @@ returns table (
   sim_subscription_id uuid,
   sim_slot int
 ) security definer set search_path = public as $$
+#variable_conflict use_column
 declare
   v_sim record;
   v_message_id uuid;
@@ -32,6 +33,15 @@ declare
 begin
   -- Ensure daily counters are refreshed
   perform reset_daily_sim_counters();
+
+  -- Self-Healing: Recover any orphaned processing messages older than 2 minutes
+  update outbound_messages
+  set status = 'pending',
+      device_id = null,
+      sim_subscription_id = null,
+      updated_at = now()
+  where status = 'processing'
+    and processed_at < now() - interval '2 minutes';
 
   -- Select the "Perfect SIM" on this device:
   -- Active, with balance, under daily limit, ordered by earliest expiry then lowest balance
@@ -87,6 +97,7 @@ create or replace function report_sms_result(
   p_error_code int default null,
   p_error_message text default null
 ) returns void security definer set search_path = public as $$
+#variable_conflict use_column
 declare
   v_msg record;
   v_sim_id uuid;
@@ -135,6 +146,7 @@ begin
       update sim_subscriptions
       set consecutive_failures = consecutive_failures + 1,
           updated_at = now()
+      where id = v_sim_id
       returning consecutive_failures into v_failures;
 
       -- Auto-Quarantine rule: 3 consecutive failures isolates the SIM
@@ -208,6 +220,7 @@ create or replace function complete_device_pairing(
   organization_id uuid,
   org_name text
 ) security definer set search_path = public as $$
+#variable_conflict use_column
 declare
   v_session record;
   v_device_id uuid;

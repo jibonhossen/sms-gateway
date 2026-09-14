@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
 
 class SmsStatusReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val messageId = intent.data?.host ?: return
+        val messageId = intent.data?.host ?: intent.getStringExtra("message_id") ?: return
         val action = intent.action ?: return
         val resultCode = resultCode
 

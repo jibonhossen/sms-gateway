@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Camera for QR Pairing -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -69,10 +70,11 @@
         <receiver
             android:name=".receiver.SmsStatusReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="com.sms.gateway.SMS_SENT" />
                 <action android:name="com.sms.gateway.SMS_DELIVERED" />
+                <data android:scheme="sms" />
             </intent-filter>
         </receiver>
 

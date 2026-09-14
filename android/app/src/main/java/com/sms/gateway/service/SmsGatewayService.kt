@@ -88,20 +88,28 @@ class SmsGatewayService : Service() {
 
     private fun startHeartbeatLoop() {
         scope.launch {
+            var counter = 0
             while (isActive) {
                 try {
-                    val (battery, isCharging) = getBatteryStatus()
-                    SupabaseManager.recordHeartbeat(
-                        battery = battery,
-                        isCharging = isCharging,
-                        networkType = "WIFI/CELLULAR",
-                        signalStrength = 100,
-                        appVersion = "1.0.0"
-                    )
+                    // Periodic queue drain check (ensures delivery even if Realtime reconnects)
+                    triggerQueueDrain()
+
+                    // Send telemetry heartbeat every 30 seconds
+                    if (counter % 3 == 0) {
+                        val (battery, isCharging) = getBatteryStatus()
+                        SupabaseManager.recordHeartbeat(
+                            battery = battery,
+                            isCharging = isCharging,
+                            networkType = "WIFI/CELLULAR",
+                            signalStrength = 100,
+                            appVersion = "1.0.0"
+                        )
+                    }
+                    counter++
                 } catch (e: Exception) {
-                    Log.e(TAG, "Heartbeat tick failed", e)
+                    Log.e(TAG, "Heartbeat/drain loop failed", e)
                 }
-                delay(30_000L) // 30-second heartbeat interval
+                delay(10_000L)
             }
         }
     }
