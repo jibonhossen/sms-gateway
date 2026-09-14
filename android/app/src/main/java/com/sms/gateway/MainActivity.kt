@@ -3,6 +3,7 @@ package com.sms.gateway
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.BatteryManager
@@ -36,8 +37,9 @@ class MainActivity : AppCompatActivity() {
     ) { permissions ->
         val allGranted = permissions.entries.all { it.value }
         if (!allGranted) {
-            Toast.makeText(this, "SMS permissions are required for gateway function", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Permissions are required for cellular gateway function", Toast.LENGTH_LONG).show()
         }
+        updateSimInfo()
     }
 
     private val scanQrLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -83,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupListeners() {
+        // QR Scanner Button
         binding.btnPair.setOnClickListener {
             val options = ScanOptions().apply {
                 setPrompt("Scan Dashboard QR Code to Pair")
@@ -93,34 +96,74 @@ class MainActivity : AppCompatActivity() {
             scanQrLauncher.launch(options)
         }
 
+        // Manual Pairing Code Button
+        binding.btnPairWithCode.setOnClickListener {
+            val rawCode = binding.etPairingCode.text?.toString()?.trim() ?: ""
+            if (rawCode.isEmpty()) {
+                binding.tilPairingCode.error = "Please enter 6-digit code"
+                return@setOnClickListener
+            }
+            binding.tilPairingCode.error = null
+
+            val cleanedCode = rawCode.replace("-", "").replace(" ", "").trim()
+            val url = GatewayApp.instance.supabaseUrl ?: BuildConfig.DEFAULT_SUPABASE_URL
+            val anonKey = GatewayApp.instance.supabaseAnonKey ?: BuildConfig.DEFAULT_SUPABASE_ANON_KEY
+
+            binding.btnPairWithCode.isEnabled = false
+            binding.btnPairWithCode.text = "Pairing…"
+
+            performPairing(url, anonKey, cleanedCode) { success ->
+                binding.btnPairWithCode.isEnabled = true
+                binding.btnPairWithCode.text = getString(R.string.pair_with_code)
+                if (success) {
+                    binding.etPairingCode.text?.clear()
+                }
+            }
+        }
+
+        // Service Toggle / Restart
         binding.btnToggleService.setOnClickListener {
             if (!GatewayApp.instance.isPaired) {
                 Toast.makeText(this, "Please pair device first", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             SmsGatewayService.start(this)
+            Toast.makeText(this, "Relay Service restarted", Toast.LENGTH_SHORT).show()
             updateUi()
         }
     }
 
     private fun handleQrScanned(jsonStr: String) {
-        Log.d("MainActivity", "handleQrScanned called with: $jsonStr")
+        Log.d(TAG, "handleQrScanned called with: $jsonStr")
+        try {
+            val payload = Json.decodeFromString<QrPairingPayload>(jsonStr)
+            Log.d(TAG, "Decoded payload: code=${payload.pairingCode}, url=${payload.url}")
+            performPairing(payload.url, payload.anonKey, payload.pairingCode)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing QR payload", e)
+            Toast.makeText(this, "Invalid QR code: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun performPairing(
+        url: String,
+        anonKey: String,
+        pairingCode: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
         lifecycleScope.launch {
             try {
-                val payload = Json.decodeFromString<QrPairingPayload>(jsonStr)
-                Log.d("MainActivity", "Decoded payload: code=${payload.pairingCode}, url=${payload.url}")
                 val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
                 val rawSecret = UUID.randomUUID().toString()
 
-                // Generate SHA-256 hash for authentication
                 val md = MessageDigest.getInstance("SHA-256")
                 val hashBytes = md.digest(rawSecret.toByteArray())
                 val hashHex = hashBytes.joinToString("") { "%02x".format(it) }
 
                 val pairingResult = SupabaseManager.completePairing(
-                    url = payload.url,
-                    anonKey = payload.anonKey,
-                    pairingCode = payload.pairingCode,
+                    url = url,
+                    anonKey = anonKey,
+                    pairingCode = pairingCode,
                     deviceName = deviceName,
                     deviceTokenHash = hashHex,
                     androidVer = Build.VERSION.RELEASE,
@@ -128,9 +171,9 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 if (pairingResult != null) {
-                    Log.d("MainActivity", "Pairing successful! Device ID: ${pairingResult.deviceId}")
-                    GatewayApp.instance.supabaseUrl = payload.url
-                    GatewayApp.instance.supabaseAnonKey = payload.anonKey
+                    Log.d(TAG, "Pairing successful! Device ID: ${pairingResult.deviceId}")
+                    GatewayApp.instance.supabaseUrl = url
+                    GatewayApp.instance.supabaseAnonKey = anonKey
                     GatewayApp.instance.deviceId = pairingResult.deviceId
                     GatewayApp.instance.orgId = pairingResult.organizationId
                     GatewayApp.instance.orgName = pairingResult.orgName
@@ -140,13 +183,16 @@ class MainActivity : AppCompatActivity() {
 
                     Toast.makeText(this@MainActivity, "Paired with ${pairingResult.orgName}!", Toast.LENGTH_SHORT).show()
                     updateUi()
+                    onComplete?.invoke(true)
                 } else {
-                    Log.e("MainActivity", "Pairing returned null - session might be invalid or expired")
-                    Toast.makeText(this@MainActivity, "Pairing failed. QR code may be expired.", Toast.LENGTH_LONG).show()
+                    Log.e(TAG, "Pairing returned null - code may be expired or invalid")
+                    Toast.makeText(this@MainActivity, "Pairing failed. Code may be expired or invalid.", Toast.LENGTH_LONG).show()
+                    onComplete?.invoke(false)
                 }
             } catch (e: Exception) {
-                Log.e("MainActivity", "Error handling pairing data", e)
-                Toast.makeText(this@MainActivity, "Invalid QR code: ${e.message}", Toast.LENGTH_SHORT).show()
+                Log.e(TAG, "Exception during pairing", e)
+                Toast.makeText(this@MainActivity, "Pairing error: ${e.message}", Toast.LENGTH_SHORT).show()
+                onComplete?.invoke(false)
             }
         }
     }
@@ -154,35 +200,89 @@ class MainActivity : AppCompatActivity() {
     private fun updateUi() {
         val app = GatewayApp.instance
         if (app.isPaired) {
-            binding.tvOrgName.text = "Organization: ${app.orgName ?: "Active"}"
+            binding.tvOrgName.text = "Organization: ${app.orgName ?: "SMS HQ Corp"}"
             binding.tvConnectionStatus.text = getString(R.string.status_connected)
+            binding.tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.online_green))
+            binding.statusPillLayout.setBackgroundResource(R.drawable.bg_status_pill_online)
             binding.statusIndicator.setBackgroundResource(R.drawable.circle_online)
-            binding.btnToggleService.text = "Restart Relay Service"
+            binding.btnToggleService.text = getString(R.string.restart_service)
             binding.tvDeviceId.text = "Device ID: ${app.deviceId}"
         } else {
             binding.tvOrgName.text = "Unpaired Device"
             binding.tvConnectionStatus.text = getString(R.string.status_unpaired)
+            binding.tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.offline_red))
+            binding.statusPillLayout.setBackgroundResource(R.drawable.bg_status_pill_offline)
             binding.statusIndicator.setBackgroundResource(R.drawable.circle_offline)
             binding.btnToggleService.text = getString(R.string.start_service)
             binding.tvDeviceId.text = "Device ID: Unregistered"
         }
 
-        // Telemetry info
-        val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val batteryLevel = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        binding.tvBatteryInfo.text = "Battery: $batteryLevel%"
-
-        // SIM slots
-        binding.tvSimInfo.text = detectSimCards()
+        updateBatteryInfo()
+        updateSimInfo()
     }
 
-    private fun detectSimCards(): String {
-        return try {
+    private fun updateBatteryInfo() {
+        val batteryStatusIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = batteryStatusIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = batteryStatusIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status = batteryStatusIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+
+        val batteryPct = if (level >= 0 && scale > 0) ((level / scale.toFloat()) * 100).toInt() else 100
+        val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+
+        binding.tvBatteryInfo.text = "Battery: $batteryPct%${if (isCharging) " (Charging • AC)" else ""}"
+        binding.pbBattery.progress = batteryPct
+
+        if (batteryPct <= 20) {
+            binding.pbBattery.setIndicatorColor(ContextCompat.getColor(this, R.color.amber_warning))
+        } else {
+            binding.pbBattery.setIndicatorColor(ContextCompat.getColor(this, R.color.accent))
+        }
+    }
+
+    private fun updateSimInfo() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            binding.tvSimInfo.text = "Cellular SIM Subscriptions (Permission Required)"
+            return
+        }
+
+        try {
             val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
-            val count = subManager.activeSubscriptionInfoCount
-            if (count > 0) "$count Active SIM Card(s) detected" else "No active SIM card"
-        } catch (e: SecurityException) {
-            "SIM permission required"
+            val subList = subManager.activeSubscriptionInfoList
+
+            if (!subList.isNullOrEmpty()) {
+                binding.tvSimInfo.text = "Cellular SIM Subscriptions (${subList.size} Active)"
+
+                val sim1 = subList.find { it.simSlotIndex == 0 }
+                if (sim1 != null) {
+                    val carrier = sim1.carrierName?.toString()?.ifBlank { "Airtel" } ?: "Airtel BD"
+                    binding.tvSim1Carrier.text = "SIM 1 • $carrier"
+                    binding.tvSim1Status.text = "ACTIVE (DEFAULT)"
+                    binding.tvSim1Status.visibility = android.view.View.VISIBLE
+                } else {
+                    binding.tvSim1Carrier.text = "SIM 1 • Empty"
+                    binding.tvSim1Status.visibility = android.view.View.GONE
+                }
+
+                val sim2 = subList.find { it.simSlotIndex == 1 }
+                if (sim2 != null) {
+                    val carrier = sim2.carrierName?.toString()?.ifBlank { "Banglalink" } ?: "Banglalink"
+                    binding.tvSim2Carrier.text = "SIM 2 • $carrier"
+                    binding.tvSim2Status.text = "BACKUP"
+                    binding.tvSim2Status.visibility = android.view.View.VISIBLE
+                } else {
+                    binding.tvSim2Carrier.text = "SIM 2 • Empty"
+                    binding.tvSim2Status.visibility = android.view.View.GONE
+                }
+            } else {
+                binding.tvSimInfo.text = "Cellular SIM Subscriptions (No SIM Detected)"
+                binding.tvSim1Carrier.text = "SIM 1 • No SIM"
+                binding.tvSim1Status.visibility = android.view.View.GONE
+                binding.tvSim2Carrier.text = "SIM 2 • No SIM"
+                binding.tvSim2Status.visibility = android.view.View.GONE
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error detecting SIM cards", e)
         }
     }
 
@@ -209,5 +309,9 @@ class MainActivity : AppCompatActivity() {
             }
             startActivity(intent)
         }
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }

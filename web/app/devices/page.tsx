@@ -20,7 +20,10 @@ import {
   CheckCircle2,
   Loader2,
   Radio,
-  Cpu
+  Cpu,
+  Copy,
+  Check,
+  KeyRound
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatDate } from "@/lib/utils";
@@ -35,6 +38,7 @@ export default function DevicesPage() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingStatus, setPairingStatus] = useState<"pending" | "claimed">("pending");
   const [generatingQr, setGeneratingQr] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const fetchDevices = async () => {
     setLoading(true);
@@ -64,6 +68,7 @@ export default function DevicesPage() {
   const handleStartPairing = async () => {
     setGeneratingQr(true);
     setPairingStatus("pending");
+    setCopiedCode(false);
 
     const { data: orgs } = await supabase.from("organizations").select("id").limit(1);
     if (!orgs || orgs.length === 0) {
@@ -73,9 +78,12 @@ export default function DevicesPage() {
     }
 
     const orgId = orgs[0].id;
+    // Generate a 6-digit human-friendly pairing code e.g. "849201"
+    const randomCode = Math.floor(100000 + Math.random() * 900000).toString();
+
     const { data: session, error } = await supabase
       .from("device_pairing_sessions")
-      .insert({ organization_id: orgId })
+      .insert({ organization_id: orgId, pairing_code: randomCode })
       .select("id, pairing_code")
       .single();
 
@@ -274,38 +282,101 @@ export default function DevicesPage() {
           </Card>
         )}
 
-        {/* QR Pairing Modal */}
+        {/* QR & Manual Pairing Code Modal */}
         <Dialog open={showQrModal} onOpenChange={setShowQrModal}>
-          <DialogContent className="sm:max-w-md text-center bg-card/95 backdrop-blur-xl border-border/80 shadow-2xl rounded-2xl">
-            <DialogHeader>
-              <DialogTitle className="text-center text-lg font-bold tracking-tight">Pair Gateway Device</DialogTitle>
+          <DialogContent className="sm:max-w-lg text-center bg-card/95 backdrop-blur-xl border-border/80 shadow-2xl rounded-3xl p-6 sm:p-7">
+            <DialogHeader className="space-y-1">
+              <DialogTitle className="text-center text-lg sm:text-xl font-bold tracking-tight text-foreground flex items-center justify-center gap-2">
+                <Smartphone className="size-5 text-primary" />
+                Pair Gateway Device
+              </DialogTitle>
               <DialogDescription className="text-center text-xs text-muted-foreground">
-                Open the Gateway app on your Android phone and scan this pairing code.
+                Connect your Android phone running SMS Gateway to start relaying cellular messages.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="py-5 flex flex-col items-center justify-center space-y-4">
+            <div className="py-3 flex flex-col items-center justify-center space-y-4">
               {pairingStatus === "claimed" ? (
                 <motion.div
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
-                  className="flex flex-col items-center gap-2 text-emerald-500 py-8"
+                  className="flex flex-col items-center gap-3 text-emerald-500 py-8"
                 >
-                  <CheckCircle2 className="size-16" />
-                  <span className="font-bold text-base">Device Paired Successfully!</span>
+                  <div className="size-16 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                    <CheckCircle2 className="size-10" />
+                  </div>
+                  <span className="font-bold text-lg text-foreground">Device Paired Successfully!</span>
+                  <p className="text-xs text-muted-foreground">Hardware relay is now active and ready.</p>
                 </motion.div>
               ) : (
-                pairingPayload && (
-                  <div className="p-4 bg-white rounded-2xl shadow-md border border-white/20 ring-4 ring-black/5">
-                    <QRCodeSVG value={pairingPayload} size={210} />
-                  </div>
-                )
-              )}
+                <>
+                  {/* Two Methods Container */}
+                  <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-4 items-center bg-muted/20 border border-border/60 p-4 rounded-2xl">
+                    
+                    {/* Method 1: QR Code */}
+                    <div className="flex flex-col items-center justify-center space-y-2">
+                      <div className="p-3 bg-white rounded-2xl shadow-sm border border-black/5 ring-4 ring-black/5">
+                        {pairingPayload && <QRCodeSVG value={pairingPayload} size={140} />}
+                      </div>
+                      <div className="text-center">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                          <QrCode className="size-3 text-primary" /> Method 1: Scan QR
+                        </span>
+                        <p className="text-[10px] text-muted-foreground">Point Gateway app camera</p>
+                      </div>
+                    </div>
 
-              {pairingStatus === "pending" && (
-                <p className="text-xs text-muted-foreground font-medium">
-                  Valid for 10 minutes &middot; Waiting for scan...
-                </p>
+                    {/* Method 2: Manual Pairing Code */}
+                    <div className="flex flex-col items-center justify-center space-y-2.5 sm:border-l sm:border-border/60 sm:pl-4">
+                      <div className="text-center">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                          <KeyRound className="size-3 text-primary" /> Method 2: Pairing Code
+                        </span>
+                        <p className="text-[10px] text-muted-foreground">Type directly in the app</p>
+                      </div>
+
+                      {/* Monospace Code Display */}
+                      <div className="w-full py-2.5 px-3 bg-background/90 rounded-xl border border-primary/30 flex items-center justify-center shadow-inner">
+                        <span className="font-mono text-2xl font-black tracking-widest text-primary">
+                          {pairingCode ? (pairingCode.length === 6 ? `${pairingCode.slice(0, 3)}-${pairingCode.slice(3)}` : pairingCode) : "------"}
+                        </span>
+                      </div>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          if (pairingCode) {
+                            navigator.clipboard.writeText(pairingCode);
+                            setCopiedCode(true);
+                            setTimeout(() => setCopiedCode(false), 2000);
+                          }
+                        }}
+                        className="w-full h-8 text-xs font-semibold rounded-xl border-border/80 hover:border-primary/50 transition-colors"
+                      >
+                        {copiedCode ? (
+                          <>
+                            <Check className="size-3.5 mr-1.5 text-emerald-500" />
+                            <span className="text-emerald-500">Copied Code</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="size-3.5 mr-1.5" />
+                            <span>Copy 6-Digit Code</span>
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                  </div>
+
+                  {pairingStatus === "pending" && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground font-medium pt-1">
+                      <span className="size-2 rounded-full bg-amber-500 animate-pulse" />
+                      <span>Code valid for 10 minutes &middot; Waiting for connection…</span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </DialogContent>

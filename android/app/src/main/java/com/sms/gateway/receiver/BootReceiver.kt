@@ -9,13 +9,20 @@ import com.sms.gateway.service.SmsGatewayService
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
-            intent.action == "android.intent.action.QUICKBOOT_POWERON"
+        val action = intent.action
+        Log.d(TAG, "BootReceiver received action: $action")
+        if (action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.sms.gateway.SIMULATE_BOOT"
         ) {
-            Log.d(TAG, "Device booted. Checking pairing status...")
+            Log.d(TAG, "Device boot/startup event detected. Checking pairing status...")
             if (GatewayApp.instance.isPaired) {
-                Log.d(TAG, "Auto-starting SmsGatewayService...")
+                Log.d(TAG, "Device is paired. Auto-starting SmsGatewayService...")
                 SmsGatewayService.start(context)
+            } else {
+                Log.w(TAG, "Device is not paired yet. Skipping auto-start.")
             }
         }
     }

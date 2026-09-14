@@ -29,11 +29,11 @@ class GatewayApp : Application() {
     }
 
     var supabaseUrl: String?
-        get() = prefs.getString("supabase_url", null)
+        get() = prefs.getString("supabase_url", null) ?: BuildConfig.DEFAULT_SUPABASE_URL.ifEmpty { null }
         set(value) = prefs.edit().putString("supabase_url", value).apply()
 
     var supabaseAnonKey: String?
-        get() = prefs.getString("supabase_anon_key", null)
+        get() = prefs.getString("supabase_anon_key", null) ?: BuildConfig.DEFAULT_SUPABASE_ANON_KEY.ifEmpty { null }
         set(value) = prefs.edit().putString("supabase_anon_key", value).apply()
 
     var deviceId: String?
@@ -49,7 +49,7 @@ class GatewayApp : Application() {
         set(value) = prefs.edit().putString("org_name", value).apply()
 
     val isPaired: Boolean
-        get() = !supabaseUrl.isNullOrEmpty() && !deviceId.isNullOrEmpty()
+        get() = !deviceId.isNullOrEmpty() && !supabaseUrl.isNullOrEmpty()
 
     companion object {
         lateinit var instance: GatewayApp

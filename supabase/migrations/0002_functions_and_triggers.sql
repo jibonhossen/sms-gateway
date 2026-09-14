@@ -227,9 +227,11 @@ declare
 begin
   select * into v_session
   from device_pairing_sessions
-  where pairing_code = p_pairing_code
+  where (upper(replace(pairing_code, '-', '')) = upper(replace(p_pairing_code, '-', '')) or pairing_code = p_pairing_code)
     and status = 'pending'
-    and expires_at > now();
+    and expires_at > now()
+  order by created_at desc
+  limit 1;
 
   if v_session.id is null then
     raise exception 'Invalid or expired pairing code';

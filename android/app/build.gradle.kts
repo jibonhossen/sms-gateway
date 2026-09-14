@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,6 +11,12 @@ android {
     namespace = "com.sms.gateway"
     compileSdk = 34
 
+    val properties = Properties()
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { properties.load(it) }
+    }
+
     defaultConfig {
         applicationId = "com.sms.gateway"
         minSdk = 26
@@ -16,6 +25,11 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        val defaultUrl = properties.getProperty("SUPABASE_URL") ?: System.getenv("NEXT_PUBLIC_SUPABASE_URL") ?: ""
+        val defaultAnonKey = properties.getProperty("SUPABASE_ANON_KEY") ?: System.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") ?: ""
+        buildConfigField("String", "DEFAULT_SUPABASE_URL", "\"$defaultUrl\"")
+        buildConfigField("String", "DEFAULT_SUPABASE_ANON_KEY", "\"$defaultAnonKey\"")
     }
 
     buildTypes {
@@ -39,6 +53,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 
