@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Cellular & Messaging Permissions -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+
+    <!-- Background Liveness & Networking -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Camera for QR Pairing -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="true" />
+
+    <application
+        android:name=".GatewayApp"
+        android:allowBackup="false"
+        android:icon="@android:drawable/stat_notify_chat"
+        android:label="@string/app_name"
+        android:roundIcon="@android:drawable/stat_notify_chat"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SmsGateway">
+
+        <!-- Main UI Activity -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- QR Scanner Activity -->
+        <activity
+            android:name=".QrScanActivity"
+            android:screenOrientation="portrait"
+            android:stateNotNeeded="true" />
+
+        <!-- 24/7 Persistent Gateway Foreground Service -->
+        <service
+            android:name=".service.SmsGatewayService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Boot Receiver: Auto-start service on phone restart -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- SMS Sent & Delivered Verification Callback Receiver -->
+        <receiver
+            android:name=".receiver.SmsStatusReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.sms.gateway.SMS_SENT" />
+                <action android:name="com.sms.gateway.SMS_DELIVERED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Inbound SMS Interceptor -->
+        <receiver
+            android:name=".receiver.SmsIncomingReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>

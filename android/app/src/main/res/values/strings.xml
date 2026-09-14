@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">SMS Gateway</string>
+    <string name="service_running">SMS Gateway Active</string>
+    <string name="service_listening">Connected to Supabase • Relaying cellular messages</string>
+    <string name="status_connected">Connected &amp; Online</string>
+    <string name="status_disconnected">Disconnected • Retrying…</string>
+    <string name="status_unpaired">Device Not Paired</string>
+    <string name="pair_device">Scan Web QR Code</string>
+    <string name="start_service">Start Relay Service</string>
+    <string name="stop_service">Stop Relay Service</string>
+</resources>
