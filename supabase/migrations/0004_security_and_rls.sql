@@ -216,6 +216,10 @@ $$ language plpgsql;
 -- -----------------------------------------------------------------------------
 alter table organizations add column if not exists quota_reset_tz text not null default 'UTC';
 
+-- Rate-limit counter lives beside the other daily counters (also declared in
+-- 0005 for idempotency; kept here so this file is self-contained).
+alter table sim_subscriptions add column if not exists rate_limited_today int not null default 0;
+
 -- Timezone-aware daily reset (replaces the naive UTC version; scheduled by cron)
 create or replace function reset_daily_sim_counters()
 returns void security definer set search_path = public as $$
