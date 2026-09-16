@@ -20,6 +20,7 @@ import { motion } from "framer-motion";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
+import { isDeviceOnline } from "@/lib/utils";
 
 const navItems = [
   { name: "Overview", href: "/", icon: LayoutDashboard, badge: null },
@@ -37,6 +38,7 @@ export function Sidebar() {
   const supabase = createClient();
   const [userEmail, setUserEmail] = useState<string>("admin@smshq.io");
   const [orgName, setOrgName] = useState<string>("SMS HQ Corp");
+  const [deviceStatus, setDeviceStatus] = useState<"online" | "offline" | "none">("none");
 
   useEffect(() => {
     const loadUser = async () => {
@@ -44,8 +46,30 @@ export function Sidebar() {
       if (user?.email) setUserEmail(user.email);
       const { data: orgs } = await supabase.from("organizations").select("name").limit(1);
       if (orgs && orgs.length > 0) setOrgName(orgs[0].name);
+
+      const { data: devs } = await supabase.from("gateway_devices").select("status, last_heartbeat_at");
+      if (devs && devs.length > 0) {
+        const hasOnline = devs.some((d) => isDeviceOnline(d));
+        setDeviceStatus(hasOnline ? "online" : "offline");
+      } else {
+        setDeviceStatus("none");
+      }
     };
     loadUser();
+
+    const channel = supabase
+      .channel("sidebar_devices_realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "gateway_devices" }, () => {
+        loadUser();
+      })
+      .subscribe();
+
+    const interval = setInterval(loadUser, 10000);
+
+    return () => {
+      clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleSignOut = async () => {
@@ -134,10 +158,24 @@ export function Sidebar() {
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-foreground truncate">{userEmail}</p>
-              <p className="text-[10px] text-emerald-500 font-medium flex items-center gap-1">
-                <span className="size-1.5 rounded-full bg-emerald-500" />
-                Hardware Connected
-              </p>
+              {deviceStatus === "online" && (
+                <p className="text-[10px] text-emerald-500 font-medium flex items-center gap-1">
+                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Hardware Online
+                </p>
+              )}
+              {deviceStatus === "offline" && (
+                <p className="text-[10px] text-zinc-400 font-medium flex items-center gap-1">
+                  <span className="size-1.5 rounded-full bg-zinc-500" />
+                  Hardware Offline
+                </p>
+              )}
+              {deviceStatus === "none" && (
+                <p className="text-[10px] text-amber-500/80 font-medium flex items-center gap-1">
+                  <span className="size-1.5 rounded-full bg-amber-500" />
+                  No Device Paired
+                </p>
+              )}
             </div>
           </div>
         </div>

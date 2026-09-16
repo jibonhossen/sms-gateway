@@ -26,7 +26,7 @@ import {
   KeyRound
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isDeviceOnline, formatTimeAgo } from "@/lib/utils";
 import type { GatewayDevice } from "@/types/database";
 
 export default function DevicesPage() {
@@ -39,9 +39,17 @@ export default function DevicesPage() {
   const [pairingStatus, setPairingStatus] = useState<"pending" | "claimed">("pending");
   const [generatingQr, setGeneratingQr] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [, setTimerTick] = useState(Date.now());
 
   const fetchDevices = async () => {
     setLoading(true);
+    // Sweep stale devices older than heartbeat threshold
+    try {
+      await supabase.rpc("mark_stale_devices_offline");
+    } catch {
+      // ignore
+    }
+
     const { data } = await supabase
       .from("gateway_devices")
       .select("*")
@@ -53,6 +61,11 @@ export default function DevicesPage() {
   useEffect(() => {
     fetchDevices();
 
+    // Re-evaluate liveness every 5 seconds dynamically
+    const interval = setInterval(() => {
+      setTimerTick(Date.now());
+    }, 5000);
+
     const channel = supabase
       .channel("devices_realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "gateway_devices" }, () => {
@@ -61,6 +74,7 @@ export default function DevicesPage() {
       .subscribe();
 
     return () => {
+      clearInterval(interval);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -160,7 +174,7 @@ export default function DevicesPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           <AnimatePresence>
             {devices.map((device) => {
-              const isOnline = device.status === "online";
+              const isOnline = isDeviceOnline(device);
               return (
                 <motion.div
                   key={device.id}
@@ -190,7 +204,7 @@ export default function DevicesPage() {
                         </div>
                       </div>
                       <span
-                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold ${
                           isOnline
                             ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
                             : "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
@@ -237,8 +251,8 @@ export default function DevicesPage() {
                           <span className="flex items-center gap-1.5">
                             <Radio className="size-3 text-muted-foreground/70" /> Last Ping:
                           </span>
-                          <span className="text-foreground text-[11px]">
-                            {formatDate(device.last_heartbeat_at)}
+                          <span className="text-foreground text-[11px] font-mono">
+                            {device.last_heartbeat_at ? `${formatTimeAgo(device.last_heartbeat_at)} (${formatDate(device.last_heartbeat_at)})` : "Never"}
                           </span>
                         </div>
                       </div>
@@ -248,7 +262,7 @@ export default function DevicesPage() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDeleteDevice(device.id)}
-                          className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 text-xs h-7 px-2.5 rounded-lg"
+                          className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 text-xs h-7 px-2.5 rounded-lg cursor-pointer"
                         >
                           <Trash2 className="size-3.5 mr-1" />
                           Disconnect

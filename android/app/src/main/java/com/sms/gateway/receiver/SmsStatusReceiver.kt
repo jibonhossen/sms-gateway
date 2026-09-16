@@ -7,6 +7,7 @@ import android.content.Intent
 import android.telephony.SmsManager
 import android.util.Log
 import com.sms.gateway.manager.SupabaseManager
+import com.sms.gateway.model.ActivityLogManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -23,6 +24,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
             when (action) {
                 "com.sms.gateway.SMS_SENT" -> {
                     if (resultCode == Activity.RESULT_OK) {
+                        ActivityLogManager.updateStatus(messageId, "SENT")
                         SupabaseManager.reportSmsResult(
                             messageId = messageId,
                             status = "sent"
@@ -35,6 +37,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
                             SmsManager.RESULT_ERROR_NULL_PDU -> "Null PDU received from carrier"
                             else -> "Carrier rejection (error code $resultCode)"
                         }
+                        ActivityLogManager.updateStatus(messageId, "FAILED", errorMessage)
                         SupabaseManager.reportSmsResult(
                             messageId = messageId,
                             status = "failed",
@@ -46,6 +49,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
 
                 "com.sms.gateway.SMS_DELIVERED" -> {
                     if (resultCode == Activity.RESULT_OK) {
+                        ActivityLogManager.updateStatus(messageId, "DELIVERED")
                         SupabaseManager.reportSmsResult(
                             messageId = messageId,
                             status = "delivered"

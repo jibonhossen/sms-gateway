@@ -8,6 +8,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
@@ -21,7 +25,6 @@ import com.sms.gateway.manager.SmsDispatcher
 import com.sms.gateway.manager.SupabaseManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -34,12 +37,15 @@ class SmsGatewayService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var isQueueProcessing = false
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         Log.d(TAG, "SmsGatewayService created")
         acquireWakeLock()
         createNotificationChannel()
+        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -56,6 +62,32 @@ class SmsGatewayService : Service() {
         triggerQueueDrain()
 
         return START_STICKY
+    }
+
+    private fun registerNetworkCallback() {
+        try {
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    super.onAvailable(network)
+                    Log.d(TAG, "Internet connection re-established, reconnecting realtime...")
+                    startRealtimeListener()
+                    triggerQueueDrain()
+                }
+
+                override fun onLost(network: Network) {
+                    super.onLost(network)
+                    Log.w(TAG, "Internet connection lost")
+                }
+            }
+            connectivityManager.registerNetworkCallback(request, networkCallback!!)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register network callback", e)
+        }
     }
 
     private fun startRealtimeListener() {
@@ -91,7 +123,7 @@ class SmsGatewayService : Service() {
             var counter = 0
             while (isActive) {
                 try {
-                    // Periodic queue drain check (ensures delivery even if Realtime reconnects)
+                    // Periodic queue drain check
                     triggerQueueDrain()
 
                     // Send telemetry heartbeat every 30 seconds
@@ -107,7 +139,7 @@ class SmsGatewayService : Service() {
                     }
                     counter++
                 } catch (e: Exception) {
-                    Log.e(TAG, "Heartbeat/drain loop failed", e)
+                    Log.e(TAG, "Heartbeat/drain loop error", e)
                 }
                 delay(10_000L)
             }
@@ -164,7 +196,7 @@ class SmsGatewayService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.service_running))
             .setContentText(getString(R.string.service_listening))
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
             .build()
@@ -172,9 +204,18 @@ class SmsGatewayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        instance = null
         serviceJob.cancel()
         wakeLock?.let {
             if (it.isHeld) it.release()
+        }
+        try {
+            networkCallback?.let {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.unregisterNetworkCallback(it)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unregistering network callback", e)
         }
         Log.d(TAG, "SmsGatewayService destroyed")
     }
@@ -185,6 +226,9 @@ class SmsGatewayService : Service() {
         private const val TAG = "SmsGatewayService"
         private const val CHANNEL_ID = "sms_gateway_liveness"
         private const val NOTIFICATION_ID = 1001
+
+        var instance: SmsGatewayService? = null
+            private set
 
         fun start(context: Context) {
             val intent = Intent(context, SmsGatewayService::class.java)

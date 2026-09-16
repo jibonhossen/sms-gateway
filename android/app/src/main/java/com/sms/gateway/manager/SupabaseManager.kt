@@ -147,6 +147,24 @@ object SupabaseManager {
         }
     }
 
+    suspend fun updateFcmToken(token: String) = withContext(Dispatchers.IO) {
+        val client = getClient() ?: return@withContext
+        val deviceId = GatewayApp.instance.deviceId ?: return@withContext
+
+        try {
+            client.postgrest.rpc(
+                function = "record_device_fcm_token",
+                parameters = buildJsonObject {
+                    put("p_device_id", deviceId)
+                    put("p_fcm_token", token)
+                }
+            )
+            Log.d(TAG, "Synced FCM push token to Supabase")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to sync FCM push token", e)
+        }
+    }
+
     suspend fun recordInboundSms(
         sender: String,
         message: String,

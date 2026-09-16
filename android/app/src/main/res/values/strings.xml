@@ -1,19 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SMS Gateway</string>
     <string name="app_subtitle">Cellular Hardware Relay Node</string>
     <string name="service_running">SMS Gateway Active</string>
     <string name="service_listening">Connected to Supabase • Relaying cellular messages</string>
+    
+    <!-- Navigation Tabs -->
+    <string name="tab_home">Dashboard</string>
+    <string name="tab_logs">Activity</string>
+    <string name="tab_settings">Settings</string>
+    
+    <!-- Status & Liveness -->
     <string name="status_connected">Relay Active &amp; Online</string>
     <string name="status_disconnected">Disconnected • Reconnecting…</string>
     <string name="status_unpaired">Device Not Paired</string>
+    <string name="telemetry_title">Hardware Telemetry</string>
+    <string name="sim_subscriptions_title">Cellular SIM Subscriptions</string>
+    
+    <!-- Onboarding Flow -->
+    <string name="onboarding_title">Setup SMS Gateway</string>
+    <string name="onboarding_subtitle">Transform this Android handset into an automated cellular SMS relay</string>
+    <string name="step_permissions_title">1. Essential Permissions</string>
+    <string name="step_permissions_desc">Grant SMS sending, receiving, and phone state access</string>
+    <string name="step_battery_title">2. Background Optimization</string>
+    <string name="step_battery_desc">Exempt app from battery throttling for 24/7 background relaying</string>
+    <string name="step_pairing_title">3. Pair with Organization</string>
+    <string name="step_pairing_desc">Scan QR code or enter the 6-digit code from Web Dashboard</string>
+    <string name="grant_permissions">Grant Permissions</string>
+    <string name="permissions_granted">Permissions Granted ✓</string>
+    <string name="exempt_battery">Disable Battery Saver</string>
+    <string name="battery_exempted">Optimization Disabled ✓</string>
+    
+    <!-- Pairing -->
     <string name="pair_device">Scan Web QR Code</string>
     <string name="pair_with_code">Pair with Code</string>
     <string name="scan_qr_code">Scan QR</string>
     <string name="pairing_code_hint">6-Digit Code (e.g. 849-201)</string>
-    <string name="telemetry_title">Hardware Telemetry</string>
     <string name="pairing_card_title">Device Pairing</string>
     <string name="pairing_card_desc">Enter the 6-digit code from your Web Dashboard or scan the QR code.</string>
+    
+    <!-- Actions -->
     <string name="start_service">Start Relay Service</string>
     <string name="stop_service">Stop Relay Service</string>
     <string name="restart_service">Restart Relay Engine</string>
+    <string name="unpair_device">Unpair Gateway Device</string>
+    <string name="unpair_confirmation">Are you sure you want to disconnect this device from your organization?</string>
+    <string name="cancel">Cancel</string>
+    <string name="unpair">Unpair</string>
 </resources>

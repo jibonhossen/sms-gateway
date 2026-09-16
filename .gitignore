@@ -377,3 +377,5 @@ out/
 .env*.local
 *.tsbuildinfo
 next-env.d.ts
+*service-account*.json
+

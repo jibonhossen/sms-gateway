@@ -8,10 +8,27 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Plus, Loader2, RefreshCw, AlertCircle, CheckCircle2, Clock, Search } from "lucide-react";
+import {
+  Send,
+  Plus,
+  Loader2,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  Search,
+  Copy,
+  Check,
+  Smartphone,
+  Calendar,
+  Hash,
+  RotateCcw,
+  Activity,
+} from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import type { OutboundMessage } from "@/types/database";
 
@@ -20,12 +37,27 @@ export default function OutboundMessagesPage() {
   const [messages, setMessages] = useState<OutboundMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [showSendModal, setShowSendModal] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<OutboundMessage | null>(null);
+  const [activeMessage, setActiveMessage] = useState<OutboundMessage | null>(null);
   const [phone, setPhone] = useState("");
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [copiedText, setCopiedText] = useState(false);
+  const [copiedPhone, setCopiedPhone] = useState(false);
+
+  const handleOpenDetails = (msg: OutboundMessage) => {
+    setActiveMessage(msg);
+    setSelectedMessage(msg);
+  };
+
+  const handleCloseDetails = (open: boolean) => {
+    if (!open) {
+      setSelectedMessage(null);
+    }
+  };
 
   const fetchMessages = async () => {
     setLoading(true);
@@ -63,34 +95,47 @@ export default function OutboundMessagesPage() {
     setSending(true);
     setSendError(null);
 
-    const { data: orgs } = await supabase.from("organizations").select("id").limit(1);
-    if (!orgs || orgs.length === 0) {
-      setSendError("No organization found. Please log in.");
-      setSending(false);
-      return;
-    }
+    try {
+      const res = await fetch("/api/messages/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phoneNumber: phone.trim(),
+          message: text.trim(),
+        }),
+      });
 
-    const { error } = await supabase.from("outbound_messages").insert({
-      organization_id: orgs[0].id,
-      phone_number: phone.trim(),
-      message: text.trim(),
-      status: "pending",
-    });
+      const data = await res.json();
+      if (!res.ok) {
+        setSendError(data.error || "Failed to queue outbound message.");
+        setSending(false);
+        return;
+      }
 
-    if (error) {
-      setSendError(error.message);
-      setSending(false);
-    } else {
       setPhone("");
       setText("");
       setShowSendModal(false);
       setSending(false);
       fetchMessages();
+    } catch (err: unknown) {
+      setSendError(err instanceof Error ? err.message : "Network error occurred.");
+      setSending(false);
+    }
+  };
+
+  const copyToClipboard = (textToCopy: string, type: "message" | "phone") => {
+    navigator.clipboard.writeText(textToCopy);
+    if (type === "message") {
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 2000);
+    } else {
+      setCopiedPhone(true);
+      setTimeout(() => setCopiedPhone(false), 2000);
     }
   };
 
   const filteredMessages = messages.filter((m) => {
-    const matchesSearch = 
+    const matchesSearch =
       m.phone_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
       m.message.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === "all" || m.status === statusFilter;
@@ -143,7 +188,7 @@ export default function OutboundMessagesPage() {
               Outbound SMS Queue
             </h1>
             <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
-              Live transmission feed and carrier delivery receipt tracking
+              Live transmission feed, carrier delivery receipt tracking, and diagnostics
             </p>
           </div>
           <Button
@@ -160,7 +205,7 @@ export default function OutboundMessagesPage() {
           <div className="relative w-full sm:w-80">
             <Search className="size-4 absolute left-3 top-2.5 text-muted-foreground" />
             <Input
-              placeholder="Filter by phone or text..."
+              placeholder="Filter by phone or message..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 text-xs bg-card/60 rounded-xl border-border/80 h-9"
@@ -173,14 +218,14 @@ export default function OutboundMessagesPage() {
                 key={st}
                 variant={statusFilter === st ? "default" : "ghost"}
                 size="sm"
-                className="h-7 text-xs px-2.5 rounded-lg capitalize font-medium"
+                className="h-7 text-xs px-2.5 rounded-lg capitalize font-medium cursor-pointer"
                 onClick={() => setStatusFilter(st)}
               >
                 {st}
               </Button>
             ))}
-            <Button variant="ghost" size="sm" onClick={fetchMessages} className="h-7 text-xs px-2 rounded-lg">
-              <RefreshCw className="size-3" />
+            <Button variant="ghost" size="sm" onClick={fetchMessages} className="h-7 text-xs px-2 rounded-lg cursor-pointer">
+              <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
           </div>
         </div>
@@ -190,46 +235,54 @@ export default function OutboundMessagesPage() {
           <CardHeader className="border-b border-border/60 pb-4">
             <CardTitle className="text-base font-bold tracking-tight">Transmission History</CardTitle>
             <CardDescription className="text-xs text-muted-foreground mt-0.5">
-              Real-time message state transitions reported directly by hardware phones
+              Click any message row to view full text body, dispatch timestamps, and cellular diagnostics.
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <Table>
+              <Table className="w-full table-fixed min-w-[760px]">
                 <TableHeader>
                   <TableRow className="border-b border-border/60 bg-muted/20 hover:bg-muted/20">
-                    <TableHead className="font-semibold text-xs py-3 pl-6">Recipient</TableHead>
-                    <TableHead className="font-semibold text-xs py-3">Message Body</TableHead>
-                    <TableHead className="font-semibold text-xs py-3">Status</TableHead>
-                    <TableHead className="font-semibold text-xs py-3">Retries</TableHead>
-                    <TableHead className="font-semibold text-xs py-3">Error Diagnostics</TableHead>
-                    <TableHead className="font-semibold text-xs py-3 pr-6 text-right">Created</TableHead>
+                    <TableHead className="font-semibold text-xs py-3 pl-6 w-[170px]">Recipient</TableHead>
+                    <TableHead className="font-semibold text-xs py-3 w-[330px]">Message Body</TableHead>
+                    <TableHead className="font-semibold text-xs py-3 w-[120px]">Status</TableHead>
+                    <TableHead className="font-semibold text-xs py-3 w-[90px]">Retries</TableHead>
+                    <TableHead className="font-semibold text-xs py-3 w-[160px]">Error Diagnostics</TableHead>
+                    <TableHead className="font-semibold text-xs py-3 pr-6 text-right w-[140px]">Created</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredMessages.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-12 text-muted-foreground text-sm">
+                      <TableCell colSpan={6} className="text-center py-14 text-muted-foreground text-sm">
                         No matching messages found in outbound queue.
                       </TableCell>
                     </TableRow>
                   ) : (
                     filteredMessages.map((m) => (
-                      <TableRow key={m.id} className="transition-colors hover:bg-muted/30 border-b border-border/40">
-                        <TableCell className="font-mono text-xs font-semibold pl-6 text-foreground">
+                      <TableRow
+                        key={m.id}
+                        onClick={() => handleOpenDetails(m)}
+                        className="transition-colors hover:bg-muted/40 border-b border-border/40 cursor-pointer group"
+                      >
+                        <TableCell className="font-mono text-xs font-semibold pl-6 text-foreground truncate">
                           {m.phone_number}
                         </TableCell>
-                        <TableCell className="max-w-md truncate text-xs text-muted-foreground">
-                          {m.message}
+                        <TableCell className="text-xs text-foreground/90 font-normal">
+                          <div className="truncate font-sans max-w-[310px]" title={m.message}>
+                            {m.message}
+                          </div>
                         </TableCell>
                         <TableCell>{getStatusBadge(m.status)}</TableCell>
                         <TableCell className="text-xs text-muted-foreground font-mono">
                           {m.retry_count} / {m.max_retries}
                         </TableCell>
-                        <TableCell className="text-xs max-w-xs truncate text-rose-500 font-mono">
-                          {m.error_message || "-"}
+                        <TableCell className="text-xs font-mono text-rose-500 truncate">
+                          <span className="truncate block max-w-[150px]" title={m.error_message || ""}>
+                            {m.error_message || "—"}
+                          </span>
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground font-mono pr-6 text-right">
+                        <TableCell className="text-xs text-muted-foreground font-mono pr-6 text-right whitespace-nowrap">
                           {formatDate(m.created_at)}
                         </TableCell>
                       </TableRow>
@@ -241,9 +294,144 @@ export default function OutboundMessagesPage() {
           </CardContent>
         </Card>
 
+        {/* Full Outbound SMS Inspector Sheet */}
+        <Sheet open={!!selectedMessage} onOpenChange={handleCloseDetails}>
+          <SheetContent side="right" className="w-full sm:max-w-lg p-0 flex flex-col justify-between overflow-y-auto">
+            {activeMessage && (
+              <>
+                <SheetHeader className="p-6 pb-4">
+                  <div className="flex items-center justify-between gap-2 pr-6">
+                    <div className="flex items-center gap-2.5">
+                      <div className="size-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+                        <Send className="size-4" />
+                      </div>
+                      <div>
+                        <SheetTitle className="text-base font-bold text-foreground">
+                          Outbound Message Details
+                        </SheetTitle>
+                        <SheetDescription className="text-xs text-muted-foreground mt-0.5">
+                          Cellular transmission parameters and delivery receipt
+                        </SheetDescription>
+                      </div>
+                    </div>
+                    {getStatusBadge(activeMessage.status)}
+                  </div>
+                </SheetHeader>
+
+                <div className="flex-1 space-y-4 p-6 pt-2">
+                  {/* Full Message Body Card */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                      <span>Message Body</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => copyToClipboard(activeMessage.message, "message")}
+                        className="h-6 px-2 text-[11px] text-primary hover:text-primary hover:bg-primary/10 rounded-md cursor-pointer"
+                      >
+                        {copiedText ? (
+                          <>
+                            <Check className="size-3 mr-1 text-emerald-500" />
+                            Copied
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="size-3 mr-1" />
+                            Copy Text
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    <div className="p-4 rounded-xl bg-muted/40 border border-border/80 text-foreground text-sm font-sans whitespace-pre-wrap break-words leading-relaxed select-text min-h-[120px] max-h-72 overflow-y-auto">
+                      {activeMessage.message}
+                    </div>
+                    <div className="flex justify-between text-[11px] text-muted-foreground font-mono pt-0.5">
+                      <span>{activeMessage.message.length} characters</span>
+                      <span>{Math.ceil(activeMessage.message.length / 160) || 1} SMS part(s)</span>
+                    </div>
+                  </div>
+
+                  {/* Diagnostic Alert if Failed */}
+                  {activeMessage.error_message && (
+                    <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-500 text-xs flex items-start gap-2.5">
+                      <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-semibold">Carrier / Radio Error Diagnostic</p>
+                        <p className="font-mono text-[11px] text-rose-400">{activeMessage.error_message}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Metadata Grid */}
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div className="p-3.5 rounded-xl bg-muted/20 border border-border/60 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                        <Smartphone className="size-3 text-primary" />
+                        Recipient Number
+                      </div>
+                      <div className="font-mono text-xs font-bold text-foreground truncate flex items-center justify-between">
+                        <span>{activeMessage.phone_number}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyToClipboard(activeMessage.phone_number, "phone")}
+                          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          {copiedPhone ? <Check className="size-2.5 text-emerald-500" /> : <Copy className="size-2.5" />}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-muted/20 border border-border/60 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                        <RotateCcw className="size-3 text-primary" />
+                        Failover Retries
+                      </div>
+                      <div className="font-mono text-xs font-semibold text-foreground">
+                        {activeMessage.retry_count} / {activeMessage.max_retries} attempts
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-muted/20 border border-border/60 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                        <Calendar className="size-3 text-primary" />
+                        Created Time
+                      </div>
+                      <div className="font-mono text-xs font-semibold text-foreground truncate">
+                        {formatDate(activeMessage.created_at)}
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-muted/20 border border-border/60 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                        <Hash className="size-3 text-primary" />
+                        Message UUID
+                      </div>
+                      <div className="font-mono text-[10px] text-muted-foreground truncate" title={activeMessage.id}>
+                        {activeMessage.id}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <SheetFooter className="p-6 pt-4 border-t border-border/60 bg-muted/20">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCloseDetails(false)}
+                    className="w-full rounded-xl font-semibold cursor-pointer border-border/80"
+                  >
+                    Close Panel
+                  </Button>
+                </SheetFooter>
+              </>
+            )}
+          </SheetContent>
+        </Sheet>
+
         {/* Send SMS Modal */}
         <Dialog open={showSendModal} onOpenChange={setShowSendModal}>
-          <DialogContent className="sm:max-w-md bg-card/95 backdrop-blur-xl border-border/80 shadow-2xl rounded-2xl">
+          <DialogContent className="sm:max-w-md bg-card/95 backdrop-blur-xl border-border/80 shadow-2xl rounded-2xl p-6">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-lg font-bold tracking-tight">
                 <Send className="size-4 text-primary" /> Send Outbound SMS
@@ -262,20 +450,24 @@ export default function OutboundMessagesPage() {
 
             <form onSubmit={handleSend} className="space-y-4 py-2">
               <div className="space-y-1.5">
-                <Label htmlFor="phone" className="text-xs font-semibold text-foreground">Recipient Phone Number</Label>
+                <Label htmlFor="phone" className="text-xs font-semibold text-foreground">
+                  Recipient Phone Number
+                </Label>
                 <Input
                   id="phone"
                   required
-                  placeholder="+19162255887 or +8801700000000"
+                  placeholder="+8801308565614 or 01308565614"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   className="text-sm font-mono bg-muted/40 rounded-xl border-border/80"
                 />
-                <p className="text-[11px] text-muted-foreground">Standard international E.164 format with country code</p>
+                <p className="text-[11px] text-muted-foreground">Standard international or local mobile format</p>
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="message" className="text-xs font-semibold text-foreground">Message Body</Label>
+                <Label htmlFor="message" className="text-xs font-semibold text-foreground">
+                  Message Body
+                </Label>
                 <Textarea
                   id="message"
                   required
@@ -292,10 +484,21 @@ export default function OutboundMessagesPage() {
               </div>
 
               <DialogFooter className="pt-2 gap-2 sm:gap-0">
-                <Button type="button" variant="outline" size="sm" onClick={() => setShowSendModal(false)} className="rounded-xl font-medium">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowSendModal(false)}
+                  className="rounded-xl font-medium cursor-pointer"
+                >
                   Cancel
                 </Button>
-                <Button type="submit" size="sm" disabled={sending} className="rounded-xl font-semibold bg-primary hover:bg-primary/90 text-primary-foreground">
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={sending}
+                  className="rounded-xl font-semibold bg-primary hover:bg-primary/90 text-primary-foreground cursor-pointer"
+                >
                   {sending ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Send className="size-4 mr-2" />}
                   Queue Message
                 </Button>

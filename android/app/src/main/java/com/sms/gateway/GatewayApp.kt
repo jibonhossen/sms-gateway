@@ -48,8 +48,16 @@ class GatewayApp : Application() {
         get() = prefs.getString("org_name", null)
         set(value) = prefs.edit().putString("org_name", value).apply()
 
+    var fcmToken: String?
+        get() = prefs.getString("fcm_token", null)
+        set(value) = prefs.edit().putString("fcm_token", value).apply()
+
     val isPaired: Boolean
         get() = !deviceId.isNullOrEmpty() && !supabaseUrl.isNullOrEmpty()
+
+    fun clearAll() {
+        prefs.edit().clear().apply()
+    }
 
     companion object {
         lateinit var instance: GatewayApp
