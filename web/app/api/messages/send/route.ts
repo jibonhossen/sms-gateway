@@ -12,6 +12,17 @@ const E164_RE = /^\+[1-9]\d{6,14}$/;
 const MAX_MESSAGE_LENGTH = 1600;
 
 export async function POST(req: NextRequest) {
+  // Declared outside try/catch so the error path can also persist rotated
+  // auth cookies (C1: this route owns its own session handling now that the
+  // middleware matcher excludes /api).
+  let cookieResponse = NextResponse.next();
+
+  const jsonWithCookies = (body: unknown, status = 200) => {
+    const res = NextResponse.json(body, { status });
+    cookieResponse.cookies.getAll().forEach((c) => res.cookies.set(c));
+    return res;
+  };
+
   try {
     // ---- 1. Authentication (C1) ----
     const supabase = createServerClient<Database>(
@@ -22,6 +33,13 @@ export async function POST(req: NextRequest) {
           getAll() {
             return req.cookies.getAll();
           },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+            cookieResponse = NextResponse.next({ request: { headers: req.headers } });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieResponse.cookies.set({ name, value, ...options })
+            );
+          },
         },
       }
     );
@@ -31,7 +49,7 @@ export async function POST(req: NextRequest) {
       error: userError,
     } = await supabase.auth.getUser();
     if (userError || !user) {
-      return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+      return jsonWithCookies({ error: "Unauthorized." }, 401);
     }
 
     // ---- 2. Tenant resolution from membership (C1: never `limit(1)`) ----
@@ -41,9 +59,9 @@ export async function POST(req: NextRequest) {
       .eq("user_id", user.id);
 
     if (memberError || !memberships || memberships.length === 0) {
-      return NextResponse.json(
+      return jsonWithCookies(
         { error: "No organization membership found." },
-        { status: 403 }
+        403
       );
     }
 
@@ -52,30 +70,30 @@ export async function POST(req: NextRequest) {
     const { phoneNumber, message, requestedSimSlot, organizationId } = body ?? {};
 
     if (!phoneNumber || typeof phoneNumber !== "string" || !E164_RE.test(phoneNumber.trim())) {
-      return NextResponse.json(
+      return jsonWithCookies(
         { error: "phoneNumber must be an E.164 phone number, e.g. +19162255887." },
-        { status: 400 }
+        400
       );
     }
     if (!message || typeof message !== "string" || message.trim().length === 0) {
-      return NextResponse.json(
+      return jsonWithCookies(
         { error: "message (text) is required." },
-        { status: 400 }
+        400
       );
     }
     if (message.trim().length > MAX_MESSAGE_LENGTH) {
-      return NextResponse.json(
+      return jsonWithCookies(
         { error: `message exceeds ${MAX_MESSAGE_LENGTH} characters (max ~10 SMS parts).` },
-        { status: 422 }
+        422
       );
     }
     let requestedSim: number | null = null;
     if (requestedSimSlot !== undefined && requestedSimSlot !== null) {
       const slot = Number(requestedSimSlot);
       if (!Number.isInteger(slot) || slot < 0 || slot > 1) {
-        return NextResponse.json(
+        return jsonWithCookies(
           { error: "requestedSimSlot must be 0 or 1." },
-          { status: 422 }
+          422
         );
       }
       requestedSim = slot;
@@ -86,9 +104,9 @@ export async function POST(req: NextRequest) {
     let orgId: string;
     if (organizationId) {
       if (!memberOrgIds.includes(organizationId)) {
-        return NextResponse.json(
+        return jsonWithCookies(
           { error: "Forbidden: you are not a member of this organization." },
-          { status: 403 }
+          403
         );
       }
       orgId = organizationId;
@@ -109,9 +127,9 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (insertError || !insertedMsg) {
-      return NextResponse.json(
+      return jsonWithCookies(
         { error: insertError?.message || "Failed to insert outbound message." },
-        { status: 500 }
+        500
       );
     }
 
@@ -171,14 +189,14 @@ export async function POST(req: NextRequest) {
       console.warn("[API] Realtime broadcast failed (queue remains poll-safe):", e);
     }
 
-    return NextResponse.json({
+    return jsonWithCookies({
       success: true,
       message: insertedMsg,
       fcmDispatchedCount: fcmTokens.length,
     });
   } catch (err) {
     console.error("[API] Error processing send SMS request:", err);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return jsonWithCookies({ error: "Internal Server Error" }, 500);
   }
 }
 
