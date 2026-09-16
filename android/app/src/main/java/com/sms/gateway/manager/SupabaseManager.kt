@@ -3,7 +3,6 @@ package com.sms.gateway.manager
 import android.util.Log
 import com.sms.gateway.GatewayApp
 import com.sms.gateway.model.ClaimedMessage
-import com.sms.gateway.model.InboundMessageInsert
 import com.sms.gateway.model.PairingResult
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
@@ -11,12 +10,13 @@ import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import io.github.jan.supabase.realtime.Realtime
+import io.github.jan.supabase.realtime.RealtimeChannel
+import io.github.jan.supabase.realtime.broadcastFlow
 import io.github.jan.supabase.realtime.channel
-import io.github.jan.supabase.realtime.postgresChangeFlow
 import io.github.jan.supabase.realtime.realtime
-import io.github.jan.supabase.realtime.PostgresAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -27,6 +27,7 @@ import kotlinx.serialization.json.put
 object SupabaseManager {
     private const val TAG = "SupabaseManager"
     private var client: SupabaseClient? = null
+    private var queueChannel: RealtimeChannel? = null
 
     fun getClient(): SupabaseClient? {
         if (client != null) return client
@@ -42,6 +43,21 @@ object SupabaseManager {
 
     fun resetClient() {
         client = null
+        queueChannel = null
+    }
+
+    /**
+     * Every device RPC must present the device secret (C2). Returns
+     * (deviceId, token) or null when the device has no stored credentials.
+     */
+    private fun deviceCredentials(): Pair<String, String>? {
+        val deviceId = GatewayApp.instance.deviceId
+        val token = GatewayApp.instance.deviceToken
+        if (deviceId == null || token == null) {
+            Log.e(TAG, "Device credentials missing (token lost after app update?). Re-pair required.")
+            return null
+        }
+        return deviceId to token
     }
 
     suspend fun completePairing(
@@ -77,13 +93,14 @@ object SupabaseManager {
 
     suspend fun claimNextSms(): ClaimedMessage? = withContext(Dispatchers.IO) {
         val client = getClient() ?: return@withContext null
-        val deviceId = GatewayApp.instance.deviceId ?: return@withContext null
+        val creds = deviceCredentials() ?: return@withContext null
 
         try {
             val results = client.postgrest.rpc(
                 function = "claim_next_sms",
                 parameters = buildJsonObject {
-                    put("p_device_id", deviceId)
+                    put("p_device_id", creds.first)
+                    put("p_device_token", creds.second)
                 }
             ).decodeList<ClaimedMessage>()
 
@@ -94,30 +111,59 @@ object SupabaseManager {
         }
     }
 
+    /** Raw report call. Returns true when the server accepted it. */
     suspend fun reportSmsResult(
         messageId: String,
         status: String,
         errorCode: Int? = null,
         errorMessage: String? = null
-    ) = withContext(Dispatchers.IO) {
-        val client = getClient() ?: return@withContext
-        val deviceId = GatewayApp.instance.deviceId ?: return@withContext
+    ): Boolean = withContext(Dispatchers.IO) {
+        val client = getClient() ?: return@withContext false
+        val creds = deviceCredentials() ?: return@withContext false
 
         try {
             client.postgrest.rpc(
                 function = "report_sms_result",
                 parameters = buildJsonObject {
                     put("p_message_id", messageId)
-                    put("p_device_id", deviceId)
+                    put("p_device_id", creds.first)
+                    put("p_device_token", creds.second)
                     put("p_status", status)
                     if (errorCode != null) put("p_error_code", errorCode)
                     if (errorMessage != null) put("p_error_message", errorMessage)
                 }
             )
             Log.d(TAG, "Reported result: $messageId -> $status")
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to report SMS result", e)
+            false
         }
+    }
+
+    /**
+     * Reliable report: persists to the local outbox when the network call
+     * fails, so receipts are never lost (P9). The service loop retries.
+     */
+    suspend fun reportSmsResultReliable(
+        messageId: String,
+        status: String,
+        errorCode: Int? = null,
+        errorMessage: String? = null
+    ): Boolean {
+        val ok = reportSmsResult(messageId, status, errorCode, errorMessage)
+        if (!ok) {
+            ReportOutbox.enqueue(
+                OutboxEntry(
+                    kind = "report",
+                    messageId = messageId,
+                    status = status,
+                    errorCode = errorCode,
+                    errorMessage = errorMessage
+                )
+            )
+        }
+        return ok
     }
 
     suspend fun recordHeartbeat(
@@ -125,21 +171,24 @@ object SupabaseManager {
         isCharging: Boolean,
         networkType: String,
         signalStrength: Int,
-        appVersion: String
+        appVersion: String,
+        activeDrain: Boolean = false
     ) = withContext(Dispatchers.IO) {
         val client = getClient() ?: return@withContext
-        val deviceId = GatewayApp.instance.deviceId ?: return@withContext
+        val creds = deviceCredentials() ?: return@withContext
 
         try {
             client.postgrest.rpc(
                 function = "record_device_heartbeat",
                 parameters = buildJsonObject {
-                    put("p_device_id", deviceId)
+                    put("p_device_id", creds.first)
+                    put("p_device_token", creds.second)
                     put("p_battery", battery)
                     put("p_charging", isCharging)
                     put("p_network", networkType)
                     put("p_signal", signalStrength)
                     put("p_app_ver", appVersion)
+                    put("p_active_drain", activeDrain)
                 }
             )
         } catch (e: Exception) {
@@ -149,13 +198,14 @@ object SupabaseManager {
 
     suspend fun updateFcmToken(token: String) = withContext(Dispatchers.IO) {
         val client = getClient() ?: return@withContext
-        val deviceId = GatewayApp.instance.deviceId ?: return@withContext
+        val creds = deviceCredentials() ?: return@withContext
 
         try {
             client.postgrest.rpc(
                 function = "record_device_fcm_token",
                 parameters = buildJsonObject {
-                    put("p_device_id", deviceId)
+                    put("p_device_id", creds.first)
+                    put("p_device_token", creds.second)
                     put("p_fcm_token", token)
                 }
             )
@@ -165,47 +215,105 @@ object SupabaseManager {
         }
     }
 
+    /** Direct inbound insert (token-gated RPC + server-side dedupe). */
     suspend fun recordInboundSms(
         sender: String,
         message: String,
-        simSlot: Int
-    ) = withContext(Dispatchers.IO) {
-        val client = getClient() ?: return@withContext
-        val orgId = GatewayApp.instance.orgId ?: return@withContext
-        val deviceId = GatewayApp.instance.deviceId ?: return@withContext
+        simSlot: Int,
+        idemKey: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val client = getClient() ?: return@withContext false
+        val creds = deviceCredentials() ?: return@withContext false
 
         try {
-            client.postgrest["inbound_messages"].insert(
-                InboundMessageInsert(
-                    organizationId = orgId,
-                    deviceId = deviceId,
-                    simSlot = simSlot,
-                    sender = sender,
-                    message = message
-                )
+            client.postgrest.rpc(
+                function = "record_inbound_sms",
+                parameters = buildJsonObject {
+                    put("p_device_id", creds.first)
+                    put("p_device_token", creds.second)
+                    put("p_sender", sender)
+                    put("p_message", message)
+                    put("p_sim_slot", simSlot)
+                    put("p_idem_key", idemKey)
+                }
             )
             Log.d(TAG, "Recorded inbound SMS from $sender")
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to record inbound SMS", e)
+            false
         }
     }
 
+    suspend fun recordInboundSmsReliable(sender: String, message: String, simSlot: Int, idemKey: String): Boolean {
+        val ok = recordInboundSms(sender, message, simSlot, idemKey)
+        if (!ok) {
+            ReportOutbox.enqueue(
+                OutboxEntry(kind = "inbound", sender = sender, message = message, simSlot = simSlot, idemKey = idemKey)
+            )
+        }
+        return ok
+    }
+
+    /** Retries persisted report/inbound entries; called from the service loop. */
+    suspend fun drainReportOutbox() {
+        val entries = ReportOutbox.drainAll()
+        for (entry in entries) {
+            val ok = if (entry.kind == "inbound") {
+                recordInboundSms(
+                    sender = entry.sender ?: continue,
+                    message = entry.message ?: continue,
+                    simSlot = entry.simSlot ?: 0,
+                    idemKey = entry.idemKey ?: continue
+                )
+            } else {
+                reportSmsResult(
+                    messageId = entry.messageId ?: continue,
+                    status = entry.status ?: "sent",
+                    errorCode = entry.errorCode,
+                    errorMessage = entry.errorMessage
+                )
+            }
+            if (!ok) {
+                ReportOutbox.enqueue(entry)
+                return // stop on first failure to preserve ordering
+            }
+        }
+    }
+
+    /**
+     * Instant wake-up via a public broadcast channel (C3). Broadcast events are
+     * NOT subject to RLS row filters (unlike postgres_changes, which the anon
+     * role can never receive for outbound_messages). Idempotent: one channel
+     * per process (P3).
+     */
     fun subscribeToQueue(scope: CoroutineScope, onWakeup: () -> Unit) {
         val client = getClient() ?: return
+        val orgId = GatewayApp.instance.orgId ?: return
+        if (queueChannel != null) return
         try {
-            val channel = client.realtime.channel("gateway_queue")
-            channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
-                table = "outbound_messages"
-            }.onEach {
-                Log.d(TAG, "New message inserted in queue, waking up...")
-                onWakeup()
-            }.launchIn(scope)
+            val channel = client.realtime.channel("gateway_queue:$orgId")
+            queueChannel = channel
 
             scope.launch(Dispatchers.IO) {
-                channel.subscribe()
+                try {
+                    channel.broadcastFlow(event = "queue_updated")
+                        .onEach {
+                            Log.d(TAG, "Queue broadcast received, waking up...")
+                            onWakeup()
+                        }
+                        .catch { Log.e(TAG, "Broadcast flow error", it) }
+                        .launchIn(scope)
+                    channel.subscribe()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to subscribe to queue channel", e)
+                    queueChannel = null
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to subscribe to realtime queue", e)
+            Log.e(TAG, "Failed to create queue channel", e)
+            queueChannel = null
         }
     }
 }
+

@@ -52,8 +52,19 @@ class GatewayApp : Application() {
         get() = prefs.getString("fcm_token", null)
         set(value) = prefs.edit().putString("fcm_token", value).apply()
 
+    /**
+     * Secret generated on this device at pairing time. Only its SHA-256 hash is
+     * stored server-side; every device RPC must present this token (C2).
+     */
+    var deviceToken: String?
+        get() = prefs.getString("device_token", null)
+        set(value) = prefs.edit().putString("device_token", value).apply()
+
     val isPaired: Boolean
         get() = !deviceId.isNullOrEmpty() && !supabaseUrl.isNullOrEmpty()
+
+    val hasDeviceCredentials: Boolean
+        get() = !deviceId.isNullOrEmpty() && !deviceToken.isNullOrEmpty()
 
     fun clearAll() {
         prefs.edit().clear().apply()

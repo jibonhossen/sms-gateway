@@ -49,7 +49,7 @@ class HomeFragment : Fragment() {
         binding.btnRestartService.setOnClickListener {
             val context = requireContext()
             SmsGatewayService.start(context)
-            SmsGatewayService.instance?.triggerQueueDrain()
+            SmsGatewayService.instance?.requestDrain()
             Toast.makeText(context, "Relay Service restarted & queue checked", Toast.LENGTH_SHORT).show()
             updateUi()
         }

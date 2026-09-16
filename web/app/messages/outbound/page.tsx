@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -59,6 +59,16 @@ export default function OutboundMessagesPage() {
     }
   };
 
+  // P4: debounce realtime-triggered refetches
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefetch = () => {
+    if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    refetchTimer.current = setTimeout(() => {
+      refetchTimer.current = null;
+      fetchMessages();
+    }, 500);
+  };
+
   const fetchMessages = async () => {
     setLoading(true);
     const { data } = await supabase
@@ -80,12 +90,13 @@ export default function OutboundMessagesPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "outbound_messages" },
         () => {
-          fetchMessages();
+          scheduleRefetch();
         }
       )
       .subscribe();
 
     return () => {
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
       supabase.removeChannel(channel);
     };
   }, []);

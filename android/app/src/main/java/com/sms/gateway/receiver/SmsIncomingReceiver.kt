@@ -13,12 +13,12 @@ import com.sms.gateway.model.ActivityLogManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.UUID
+import java.security.MessageDigest
 
 class SmsIncomingReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
-        if (!GatewayApp.instance.isPaired) return
+        if (!GatewayApp.instance.hasDeviceCredentials) return
 
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return
         if (messages.isEmpty()) return
@@ -31,7 +31,12 @@ class SmsIncomingReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "Incoming SMS from $sender on resolved SIM slot $simSlot")
 
-        val logId = UUID.randomUUID().toString()
+        // P10: idempotency key — sha256(sender | body | slot | minute-bucket).
+        // Server enforces a unique index, so SMSC redeliveries are dropped.
+        val minuteBucket = System.currentTimeMillis() / 60_000
+        val idemKey = sha256("$sender|$fullBody|$simSlot|$minuteBucket")
+
+        val logId = idemKey
         ActivityLogManager.addLog(
             ActivityLog(
                 id = logId,
@@ -42,13 +47,26 @@ class SmsIncomingReceiver : BroadcastReceiver() {
             )
         )
 
+        // P9: goAsync keeps the process alive until the insert lands; failures
+        // persist to the local outbox and are retried by the service loop.
+        val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
-            SupabaseManager.recordInboundSms(
-                sender = sender,
-                message = fullBody,
-                simSlot = simSlot
-            )
+            try {
+                SupabaseManager.recordInboundSmsReliable(
+                    sender = sender,
+                    message = fullBody,
+                    simSlot = simSlot,
+                    idemKey = idemKey
+                )
+            } finally {
+                pendingResult.finish()
+            }
         }
+    }
+
+    private fun sha256(input: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     private fun resolveSimSlot(context: Context, intent: Intent): Int {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -50,17 +50,24 @@ export default function OverviewPage() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
+  // P4: debounced, single-flight refetch — realtime events no longer trigger a
+  // full 3-query refetch (incl. 500 message rows) per event.
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefetch = () => {
+    if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    refetchTimer.current = setTimeout(() => {
+      refetchTimer.current = null;
+      fetchData();
+    }, 500);
+  };
+
   const fetchData = async () => {
     setLoading(true);
-    try {
-      await supabase.rpc("mark_stale_devices_offline");
-    } catch {
-      // ignore
-    }
-
+    // Stale-device sweeping is owned by pg_cron now — browsers no longer
+    // trigger global maintenance RPCs on page load.
     const [devRes, msgRes, simRes] = await Promise.all([
       supabase.from("gateway_devices").select("*").order("created_at", { ascending: false }),
-      supabase.from("outbound_messages").select("*").order("created_at", { ascending: false }).limit(500),
+      supabase.from("outbound_messages").select("*").order("created_at", { ascending: false }).limit(200),
       supabase.from("sim_subscriptions").select("*").order("sim_slot", { ascending: true }),
     ]);
 
@@ -82,18 +89,19 @@ export default function OverviewPage() {
     const channel = supabase
       .channel("overview_realtime_stream")
       .on("postgres_changes", { event: "*", schema: "public", table: "outbound_messages" }, () => {
-        fetchData();
+        scheduleRefetch();
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "gateway_devices" }, () => {
-        fetchData();
+        scheduleRefetch();
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "sim_subscriptions" }, () => {
-        fetchData();
+        scheduleRefetch();
       })
       .subscribe();
 
     return () => {
       clearInterval(interval);
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
       supabase.removeChannel(channel);
     };
   }, []);

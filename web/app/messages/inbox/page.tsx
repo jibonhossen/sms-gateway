@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -34,6 +34,16 @@ export default function InboxPage() {
   const [copiedText, setCopiedText] = useState(false);
   const [copiedSender, setCopiedSender] = useState(false);
 
+  // P4: debounce realtime-triggered refetches
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefetch = () => {
+    if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    refetchTimer.current = setTimeout(() => {
+      refetchTimer.current = null;
+      fetchInbox();
+    }, 500);
+  };
+
   const handleOpenDetails = (msg: InboundMessage) => {
     setActiveMessage(msg);
     setSelectedMessage(msg);
@@ -66,12 +76,13 @@ export default function InboxPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "inbound_messages" },
         () => {
-          fetchInbox();
+          scheduleRefetch();
         }
       )
       .subscribe();
 
     return () => {
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
       supabase.removeChannel(channel);
     };
   }, []);
