@@ -454,6 +454,14 @@ export type Database = {
         }[]
       }
       get_user_org_ids: { Args: never; Returns: string[] }
+      mark_stale_devices_offline: { Args: never; Returns: undefined }
+      record_device_fcm_token: {
+        Args: {
+          p_device_id: string
+          p_fcm_token: string
+        }
+        Returns: undefined
+      }
       record_device_heartbeat: {
         Args: {
           p_app_ver: string

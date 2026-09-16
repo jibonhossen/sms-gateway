@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import Link from "next/link";
-import { formatDate } from "@/lib/utils";
+import { formatDate, isDeviceOnline } from "@/lib/utils";
 import { MessageActivityChart } from "@/components/MessageActivityChart";
 import { SimQuotaChart } from "@/components/SimQuotaChart";
 import type { OutboundMessage, GatewayDevice, SimSubscription } from "@/types/database";
@@ -41,6 +41,7 @@ export default function OverviewPage() {
   const [messages, setMessages] = useState<OutboundMessage[]>([]);
   const [sims, setSims] = useState<SimSubscription[]>([]);
   const [loading, setLoading] = useState(true);
+  const [, setTimerTick] = useState(Date.now());
 
   // Quick Send SMS Modal
   const [showSendModal, setShowSendModal] = useState(false);
@@ -51,9 +52,15 @@ export default function OverviewPage() {
 
   const fetchData = async () => {
     setLoading(true);
+    try {
+      await supabase.rpc("mark_stale_devices_offline");
+    } catch {
+      // ignore
+    }
+
     const [devRes, msgRes, simRes] = await Promise.all([
       supabase.from("gateway_devices").select("*").order("created_at", { ascending: false }),
-      supabase.from("outbound_messages").select("*").order("created_at", { ascending: false }).limit(20),
+      supabase.from("outbound_messages").select("*").order("created_at", { ascending: false }).limit(500),
       supabase.from("sim_subscriptions").select("*").order("sim_slot", { ascending: true }),
     ]);
 
@@ -65,6 +72,11 @@ export default function OverviewPage() {
 
   useEffect(() => {
     fetchData();
+
+    // Re-evaluate liveness every 5s
+    const interval = setInterval(() => {
+      setTimerTick(Date.now());
+    }, 5000);
 
     // Realtime listener for message states & hardware status
     const channel = supabase
@@ -81,6 +93,7 @@ export default function OverviewPage() {
       .subscribe();
 
     return () => {
+      clearInterval(interval);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -90,33 +103,35 @@ export default function OverviewPage() {
     setSending(true);
     setSendError(null);
 
-    const { data: orgs } = await supabase.from("organizations").select("id").limit(1);
-    if (!orgs || orgs.length === 0) {
-      setSendError("No active organization found. Please ensure you are logged in.");
-      setSending(false);
-      return;
-    }
+    try {
+      const res = await fetch("/api/messages/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phoneNumber: phone.trim(),
+          message: text.trim(),
+        }),
+      });
 
-    const { error } = await supabase.from("outbound_messages").insert({
-      organization_id: orgs[0].id,
-      phone_number: phone.trim(),
-      message: text.trim(),
-      status: "pending",
-    });
+      const data = await res.json();
+      if (!res.ok) {
+        setSendError(data.error || "Failed to queue outbound message.");
+        setSending(false);
+        return;
+      }
 
-    if (error) {
-      setSendError(error.message);
-      setSending(false);
-    } else {
       setPhone("");
       setText("");
       setShowSendModal(false);
       setSending(false);
       fetchData();
+    } catch (err: unknown) {
+      setSendError(err instanceof Error ? err.message : "Network error occurred.");
+      setSending(false);
     }
   };
 
-  const activeDevices = devices.filter((d) => d.status === "online").length;
+  const activeDevices = devices.filter((d) => isDeviceOnline(d)).length;
   const pendingCount = messages.filter((m) => m.status === "pending" || m.status === "processing").length;
   const sentCount = messages.filter((m) => m.status === "sent" || m.status === "delivered").length;
   const totalBalance = sims.reduce((acc, s) => acc + (s.available_balance || 0), 0);
@@ -300,7 +315,7 @@ export default function OverviewPage() {
         {/* Charts Grid: Message Throughput Area Chart & SIM Quota Allocation */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full min-w-0">
           <div className="lg:col-span-2 min-w-0">
-            <MessageActivityChart messages={messages} />
+            <MessageActivityChart messages={messages} onRefresh={fetchData} isLoading={loading} />
           </div>
           <div className="lg:col-span-1 min-w-0">
             <SimQuotaChart sims={sims} />

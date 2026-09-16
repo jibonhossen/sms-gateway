@@ -83,6 +83,13 @@ serve(async (req: Request) => {
       });
     }
 
+    // Query devices in organization with FCM tokens
+    const { data: devices } = await supabase
+      .from("gateway_devices")
+      .select("fcm_token")
+      .eq("organization_id", keyData.organization_id)
+      .not("fcm_token", "is", null);
+
     return new Response(
       JSON.stringify({
         success: true,
@@ -90,6 +97,7 @@ serve(async (req: Request) => {
         status: inserted.status,
         to: inserted.phone_number,
         createdAt: inserted.created_at,
+        devicesNotified: devices?.length || 0,
       }),
       { status: 201, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
