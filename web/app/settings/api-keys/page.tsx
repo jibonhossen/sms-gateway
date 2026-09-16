@@ -43,9 +43,14 @@ export default function ApiKeysPage() {
     e.preventDefault();
     setCreating(true);
 
-    const { data: orgs } = await supabase.from("organizations").select("id").limit(1);
-    if (!orgs || orgs.length === 0) {
-      alert("No organization found");
+    // C1 fix: resolve the org from the logged-in user's membership — never
+    // `organizations.limit(1)` (which is the first org in the whole DB).
+    const { data: orgs, error: orgError } = await supabase
+      .from("organization_members")
+      .select("organization_id")
+      .eq("user_id", (await supabase.auth.getUser()).data.user?.id ?? "");
+    if (orgError || !orgs || orgs.length === 0) {
+      alert("No organization membership found");
       setCreating(false);
       return;
     }
@@ -63,7 +68,7 @@ export default function ApiKeysPage() {
       .join("");
 
     const { error } = await supabase.from("api_keys").insert({
-      organization_id: orgs[0].id,
+      organization_id: orgs[0].organization_id,
       name: keyName.trim(),
       key_prefix: keyPrefix,
       key_hash: keyHash,
@@ -92,7 +97,9 @@ export default function ApiKeysPage() {
 
   const handleRevoke = async (id: string) => {
     if (!confirm("Are you sure you want to revoke this API key? External backends using it will be denied.")) return;
-    await supabase.from("api_keys").delete().eq("id", id);
+    // P6: soft-revoke instead of deleting — preserves the usage audit trail
+    // and the send-sms edge function now rejects revoked keys.
+    await supabase.from("api_keys").update({ revoked_at: new Date().toISOString() }).eq("id", id);
     fetchKeys();
   };
 

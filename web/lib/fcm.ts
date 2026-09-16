@@ -90,11 +90,13 @@ async function getAccessToken(sa: ServiceAccount): Promise<string> {
   return data.access_token;
 }
 
-export async function sendWakeUpFcm(fcmToken: string): Promise<boolean> {
+export async function sendWakeUpFcm(
+  fcmToken: string
+): Promise<{ ok: boolean; dead: boolean }> {
   const sa = getServiceAccount();
   if (!sa) {
     console.warn("[FCM] No service account configured. Skipping FCM push.");
-    return false;
+    return { ok: false, dead: false };
   }
 
   try {
@@ -110,7 +112,10 @@ export async function sendWakeUpFcm(fcmToken: string): Promise<boolean> {
         },
         android: {
           priority: "high",
-          ttl: "86400s",
+          // P5: a wake-up older than 30s is useless (the message has been
+          // re-queued/claimed by then); collapse bursts into one delivery.
+          ttl: "30s",
+          collapse_key: "drain_queue",
         },
       },
     };
@@ -127,20 +132,37 @@ export async function sendWakeUpFcm(fcmToken: string): Promise<boolean> {
     if (!res.ok) {
       const errBody = await res.text();
       console.error(`[FCM] Push failed for token ${fcmToken.slice(0, 15)}...: ${errBody}`);
-      return false;
+      // P5: report tokens FCM will never deliver again so callers can prune.
+      const dead =
+        res.status === 404 ||
+        /UNREGISTERED|INVALID_ARGUMENT|NOT_FOUND/i.test(errBody);
+      return { ok: false, dead };
     }
 
     console.log(`[FCM] High-priority wake-up push dispatched to ${fcmToken.slice(0, 15)}...`);
-    return true;
+    return { ok: true, dead: false };
   } catch (error) {
     console.error("[FCM] Error dispatching wake-up push:", error);
-    return false;
+    return { ok: false, dead: false };
   }
 }
 
-export async function sendWakeUpFcmToDevices(fcmTokens: (string | null | undefined)[]): Promise<void> {
-  const validTokens = Array.from(new Set(fcmTokens.filter((t): t is string => Boolean(t && t.trim().length > 0))));
-  if (validTokens.length === 0) return;
+export async function sendWakeUpFcmToDevices(
+  fcmTokens: (string | null | undefined)[]
+): Promise<{ dispatched: number; deadTokens: string[] }> {
+  const validTokens = Array.from(
+    new Set(fcmTokens.filter((t): t is string => Boolean(t && t.trim().length > 0)))
+  );
+  if (validTokens.length === 0) return { dispatched: 0, deadTokens: [] };
 
-  await Promise.allSettled(validTokens.map((token) => sendWakeUpFcm(token)));
+  const results = await Promise.allSettled(validTokens.map((token) => sendWakeUpFcm(token)));
+  let dispatched = 0;
+  const deadTokens: string[] = [];
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      if (result.value.ok) dispatched++;
+      if (result.value.dead) deadTokens.push(validTokens[index]);
+    }
+  });
+  return { dispatched, deadTokens };
 }

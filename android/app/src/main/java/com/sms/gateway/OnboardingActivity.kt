@@ -227,6 +227,9 @@ class OnboardingActivity : AppCompatActivity() {
                     GatewayApp.instance.deviceId = pairingResult.deviceId
                     GatewayApp.instance.orgId = pairingResult.organizationId
                     GatewayApp.instance.orgName = pairingResult.orgName
+                    // Persist the raw device secret — required for every
+                    // authenticated device RPC (C2). Only its hash left the device.
+                    GatewayApp.instance.deviceToken = rawSecret
 
                     // Sync FCM token if available
                     GatewayApp.instance.fcmToken?.let { token ->

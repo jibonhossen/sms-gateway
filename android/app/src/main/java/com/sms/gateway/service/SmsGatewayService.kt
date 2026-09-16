@@ -16,27 +16,37 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.sms.gateway.BuildConfig
 import com.sms.gateway.GatewayApp
 import com.sms.gateway.MainActivity
 import com.sms.gateway.R
+import com.sms.gateway.manager.ReceiptAggregator
 import com.sms.gateway.manager.SmsDispatcher
 import com.sms.gateway.manager.SupabaseManager
+import com.sms.gateway.model.ActivityLogManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class SmsGatewayService : Service() {
     private val serviceJob = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + serviceJob)
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private var isQueueProcessing = false
+    private val drainSignal = Channel<Unit>(Channel.CONFLATED)
+    private val drainMutex = Mutex()
+    @Volatile private var drainLoopStarted = false
+    @Volatile private var drainActive = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
@@ -57,9 +67,11 @@ class SmsGatewayService : Service() {
             return START_STICKY
         }
 
-        startRealtimeListener()
+        startDrainLoop()
         startHeartbeatLoop()
-        triggerQueueDrain()
+        // Idempotent single-channel realtime subscription (C3, P3)
+        SupabaseManager.subscribeToQueue(scope) { requestDrain() }
+        requestDrain()
 
         return START_STICKY
     }
@@ -74,9 +86,9 @@ class SmsGatewayService : Service() {
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     super.onAvailable(network)
-                    Log.d(TAG, "Internet connection re-established, reconnecting realtime...")
-                    startRealtimeListener()
-                    triggerQueueDrain()
+                    Log.d(TAG, "Internet connection re-established, draining queue...")
+                    // Realtime auto-reconnects on its own; we only need to drain.
+                    requestDrain()
                 }
 
                 override fun onLost(network: Network) {
@@ -90,32 +102,47 @@ class SmsGatewayService : Service() {
         }
     }
 
-    private fun startRealtimeListener() {
-        SupabaseManager.subscribeToQueue(scope) {
-            triggerQueueDrain()
+    /**
+     * Single drain actor (H4): FCM wake-ups, network callbacks, realtime
+     * events and the heartbeat all funnel through one conflated channel, and
+     * exactly one consumer drains behind a mutex. The old race-prone
+     * `isQueueProcessing` flag is gone.
+     */
+    fun requestDrain() {
+        scope.launch { drainSignal.trySend(Unit) }
+    }
+
+    private fun startDrainLoop() {
+        if (drainLoopStarted) return
+        drainLoopStarted = true
+        scope.launch {
+            for (signal in drainSignal) {
+                drainMutex.withLock {
+                    drainActive = true
+                    try {
+                        drainQueue()
+                    } finally {
+                        drainActive = false
+                    }
+                }
+            }
         }
     }
 
-    fun triggerQueueDrain() {
-        if (isQueueProcessing) return
-        scope.launch {
-            isQueueProcessing = true
-            try {
-                while (isActive) {
-                    val message = SupabaseManager.claimNextSms() ?: break
-                    Log.d(TAG, "Claimed message ${message.messageId} for SIM ${message.simSlot}")
-                    SmsDispatcher.sendSms(
-                        context = applicationContext,
-                        messageId = message.messageId,
-                        phoneNumber = message.phoneNumber,
-                        messageText = message.message,
-                        simSlot = message.simSlot
-                    )
-                }
-            } finally {
-                isQueueProcessing = false
-            }
+    private suspend fun CoroutineScope.drainQueue() {
+        while (isActive) {
+            val message = SupabaseManager.claimNextSms() ?: break
+            Log.d(TAG, "Claimed message ${message.messageId} for SIM ${message.simSlot}")
+            SmsDispatcher.sendSms(
+                context = applicationContext,
+                messageId = message.messageId,
+                phoneNumber = message.phoneNumber,
+                messageText = message.message,
+                simSlot = message.simSlot
+            )
         }
+        // Retry any receipts/inbound inserts that previously failed (P9)
+        SupabaseManager.drainReportOutbox()
     }
 
     private fun startHeartbeatLoop() {
@@ -123,19 +150,33 @@ class SmsGatewayService : Service() {
             var counter = 0
             while (isActive) {
                 try {
-                    // Periodic queue drain check
-                    triggerQueueDrain()
+                    requestDrain()
 
-                    // Send telemetry heartbeat every 30 seconds
                     if (counter % 3 == 0) {
+                        // Real telemetry + lease renewal while draining (C4, P2)
                         val (battery, isCharging) = getBatteryStatus()
                         SupabaseManager.recordHeartbeat(
                             battery = battery,
                             isCharging = isCharging,
-                            networkType = "WIFI/CELLULAR",
-                            signalStrength = 100,
-                            appVersion = "1.0.0"
+                            networkType = resolveNetworkType(),
+                            signalStrength = resolveSignalStrength(),
+                            appVersion = BuildConfig.VERSION_NAME,
+                            activeDrain = drainActive
                         )
+
+                        // Fail messages whose part-receipts never completed (H1)
+                        for ((messageId, receipt) in ReceiptAggregator.sweepTimeouts()) {
+                            ActivityLogManager.updateStatus(messageId, "FAILED", receipt.errorMessage)
+                            SupabaseManager.reportSmsResultReliable(
+                                messageId = messageId,
+                                status = "failed",
+                                errorCode = receipt.errorCode,
+                                errorMessage = receipt.errorMessage
+                            )
+                        }
+
+                        // Re-acquire the bounded wakelock (P11)
+                        if (wakeLock?.isHeld != true) acquireWakeLock()
                     }
                     counter++
                 } catch (e: Exception) {
@@ -160,6 +201,33 @@ class SmsGatewayService : Service() {
         return Pair(batteryPct, isCharging)
     }
 
+    // Real telemetry instead of hardcoded placeholders (P2)
+    private fun resolveNetworkType(): String {
+        return try {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+            when {
+                caps == null -> "UNKNOWN"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELLULAR"
+                else -> "OTHER"
+            }
+        } catch (e: Exception) {
+            "UNKNOWN"
+        }
+    }
+
+    private fun resolveSignalStrength(): Int {
+        return try {
+            val tm = getSystemService(TelephonyManager::class.java)
+            val strength = tm?.signalStrength ?: return 0
+            strength.level * 25 // 0..4 levels -> 0..100%
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    // Bounded wakelock with periodic re-acquire (P11) instead of an indefinite hold
     private fun acquireWakeLock() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
@@ -167,9 +235,10 @@ class SmsGatewayService : Service() {
             "SmsGateway::LivenessWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire()
+            acquire(WAKELOCK_TIMEOUT_MS)
         }
     }
+
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -226,6 +295,7 @@ class SmsGatewayService : Service() {
         private const val TAG = "SmsGatewayService"
         private const val CHANNEL_ID = "sms_gateway_liveness"
         private const val NOTIFICATION_ID = 1001
+        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L
 
         var instance: SmsGatewayService? = null
             private set
@@ -244,3 +314,4 @@ class SmsGatewayService : Service() {
         }
     }
 }
+

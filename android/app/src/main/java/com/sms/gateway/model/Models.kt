@@ -33,15 +33,6 @@ data class PairingResult(
     @SerialName("org_name") val orgName: String
 )
 
-@Serializable
-data class InboundMessageInsert(
-    @SerialName("organization_id") val organizationId: String,
-    @SerialName("device_id") val deviceId: String,
-    @SerialName("sim_slot") val simSlot: Int,
-    @SerialName("sender") val sender: String,
-    @SerialName("message") val message: String
-)
-
 data class ActivityLog(
     val id: String,
     val phoneNumber: String,

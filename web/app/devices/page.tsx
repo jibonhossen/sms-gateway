@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -41,15 +41,18 @@ export default function DevicesPage() {
   const [copiedCode, setCopiedCode] = useState(false);
   const [, setTimerTick] = useState(Date.now());
 
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefetch = () => {
+    if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    refetchTimer.current = setTimeout(() => {
+      refetchTimer.current = null;
+      fetchDevices();
+    }, 500);
+  };
+
   const fetchDevices = async () => {
     setLoading(true);
-    // Sweep stale devices older than heartbeat threshold
-    try {
-      await supabase.rpc("mark_stale_devices_offline");
-    } catch {
-      // ignore
-    }
-
+    // Stale-device sweeping is owned by pg_cron — no browser maintenance RPCs.
     const { data } = await supabase
       .from("gateway_devices")
       .select("*")
@@ -69,12 +72,13 @@ export default function DevicesPage() {
     const channel = supabase
       .channel("devices_realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "gateway_devices" }, () => {
-        fetchDevices();
+        scheduleRefetch();
       })
       .subscribe();
 
     return () => {
       clearInterval(interval);
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -84,14 +88,20 @@ export default function DevicesPage() {
     setPairingStatus("pending");
     setCopiedCode(false);
 
-    const { data: orgs } = await supabase.from("organizations").select("id").limit(1);
-    if (!orgs || orgs.length === 0) {
-      alert("No organization found. Please relogin.");
+    // C1 fix: resolve the org from the logged-in user's membership — never
+    // `organizations.limit(1)` (which is the first org in the whole DB).
+    const { data: orgs, error: orgError } = await supabase
+      .from("organization_members")
+      .select("organization_id")
+      .eq("user_id", (await supabase.auth.getUser()).data.user?.id ?? "");
+
+    if (orgError || !orgs || orgs.length === 0) {
+      alert("No organization membership found. Please relogin.");
       setGeneratingQr(false);
       return;
     }
 
-    const orgId = orgs[0].id;
+    const orgId = orgs[0].organization_id;
     // Generate a 6-digit human-friendly pairing code e.g. "849201"
     const randomCode = Math.floor(100000 + Math.random() * 900000).toString();
 
