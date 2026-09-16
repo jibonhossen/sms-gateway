@@ -13,7 +13,7 @@
 create or replace function verify_device_auth(
   p_device_id uuid,
   p_device_token text
-) returns void security definer set search_path = public as $$
+) returns void security definer set search_path = public, extensions as $$
 begin
   if p_device_id is null or p_device_token is null then
     raise exception 'UNAUTHORIZED_DEVICE';
@@ -21,7 +21,7 @@ begin
   if not exists (
     select 1 from gateway_devices
     where id = p_device_id
-      and device_token_hash = encode(digest(p_device_token, 'sha256'), 'hex')
+      and device_token_hash = encode(extensions.digest(p_device_token::bytea, 'sha256'), 'hex')
       and status <> 'disabled'
   ) then
     raise exception 'UNAUTHORIZED_DEVICE';
@@ -128,7 +128,7 @@ $$ language plpgsql;
 -- -----------------------------------------------------------------------------
 create or replace function is_org_admin(p_org uuid)
 returns boolean security definer set search_path = public stable as $$
-  exists (
+  select exists (
     select 1 from organization_members
     where organization_id = p_org
       and user_id = auth.uid()

@@ -297,12 +297,12 @@ object SupabaseManager {
 
             scope.launch(Dispatchers.IO) {
                 try {
-                    channel.broadcastFlow(event = "queue_updated")
+                    channel.broadcastFlow<kotlinx.serialization.json.JsonObject>(event = "queue_updated")
                         .onEach {
                             Log.d(TAG, "Queue broadcast received, waking up...")
                             onWakeup()
                         }
-                        .catch { Log.e(TAG, "Broadcast flow error", it) }
+                        .catch { cause -> Log.e(TAG, "Broadcast flow error", cause) }
                         .launchIn(scope)
                     channel.subscribe()
                 } catch (e: Exception) {

@@ -129,7 +129,7 @@ class SmsGatewayService : Service() {
         }
     }
 
-    private suspend fun drainQueue() {
+    private suspend fun CoroutineScope.drainQueue() {
         while (isActive) {
             val message = SupabaseManager.claimNextSms() ?: break
             Log.d(TAG, "Claimed message ${message.messageId} for SIM ${message.simSlot}")

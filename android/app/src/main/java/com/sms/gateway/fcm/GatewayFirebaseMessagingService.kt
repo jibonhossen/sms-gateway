@@ -31,7 +31,6 @@ class GatewayFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(remoteMessage)
         Log.d(TAG, "FCM message received from: ${remoteMessage.from}, data: ${remoteMessage.data}")
 
-        val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             // Bounded wakelock sized to the batch: 10 messages x 2s pacing + slack (H3)
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -46,7 +45,7 @@ class GatewayFirebaseMessagingService : FirebaseMessagingService() {
                     return@launch
                 }
 
-                // H3: the main thread is never blocked (goAsync instead of
+                // H3: the main thread is never blocked (background coroutine instead of
                 // runBlocking); the drain is bounded to MAX_BATCH messages —
                 // anything left stays queued for the next wake-up/poll, which
                 // also keeps every claimed message far inside its 15-minute
@@ -79,7 +78,6 @@ class GatewayFirebaseMessagingService : FirebaseMessagingService() {
                 Log.e(TAG, "Error in FCM background queue drain", e)
             } finally {
                 if (wakeLock.isHeld) wakeLock.release()
-                pendingResult.finish()
             }
         }
     }

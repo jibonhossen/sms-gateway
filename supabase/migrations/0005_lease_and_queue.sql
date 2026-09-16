@@ -42,42 +42,38 @@ create or replace function claim_next_sms(
   message text,
   sim_subscription_id uuid,
   sim_slot int
-) security definer set search_path = public as $$
+) security definer set search_path = public, extensions as $$
 #variable_conflict use_column
 declare
-  v_sim record;
   v_message_id uuid;
   v_org_id uuid;
   v_phone text;
   v_text text;
+  v_sim_id uuid;
+  v_sim_slot int;
 begin
   perform verify_device_auth(p_device_id, p_device_token);
 
-  -- Select the healthiest SIM on this device (nearest expiry, lowest balance)
-  select id, sim_slot
-  into v_sim
-  from sim_subscriptions
-  where device_id = p_device_id
-    and status = 'active'
-    and available_balance > 0
-    and sent_today < daily_limit
-  order by expires_at asc nulls last, available_balance asc
-  limit 1;
-
-  if v_sim.id is null then
-    return;
-  end if;
-
-  select om.id, om.organization_id, om.phone_number, om.message
-  into v_message_id, v_org_id, v_phone, v_text
+  -- Select next pending message and optimal matching eligible SIM on this device
+  select om.id, om.organization_id, om.phone_number, om.message, s.id, s.sim_slot
+  into v_message_id, v_org_id, v_phone, v_text, v_sim_id, v_sim_slot
   from outbound_messages om
-  join gateway_devices gd on gd.id = p_device_id
-  where om.organization_id = gd.organization_id
-    and om.status = 'pending'
-    and (om.requested_sim_slot is null or om.requested_sim_slot = v_sim.sim_slot)
+  join gateway_devices gd on gd.id = p_device_id and gd.organization_id = om.organization_id
+  join lateral (
+    select s.id, s.sim_slot
+    from sim_subscriptions s
+    where s.device_id = p_device_id
+      and s.status = 'active'
+      and s.available_balance > 0
+      and s.sent_today < s.daily_limit
+      and (om.requested_sim_slot is null or om.requested_sim_slot = s.sim_slot)
+    order by s.expires_at asc nulls last, s.available_balance asc
+    limit 1
+  ) s on true
+  where om.status = 'pending'
   order by om.created_at asc
   limit 1
-  for update skip locked;
+  for update of om skip locked;
 
   if v_message_id is null then
     return;
@@ -86,14 +82,14 @@ begin
   update outbound_messages
   set status = 'processing',
       device_id = p_device_id,
-      sim_subscription_id = v_sim.id,
+      sim_subscription_id = v_sim_id,
       lease_expires_at = now() + interval '15 minutes',
       processed_at = now(),
       updated_at = now()
   where id = v_message_id;
 
   return query
-  select v_message_id, v_org_id, v_phone, v_text, v_sim.id, v_sim.sim_slot;
+  select v_message_id, v_org_id, v_phone, v_text, v_sim_id, v_sim_slot;
 end;
 $$ language plpgsql;
 

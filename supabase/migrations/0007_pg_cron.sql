@@ -84,21 +84,26 @@ select cron.schedule('rollup-api-key-usage', '0 * * * *',
 -- OPERATOR SETUP (one-time, before running this migration):
 --   alter database postgres set "app.settings.supabase_url" = 'https://<project-ref>.supabase.co';
 --   alter database postgres set "app.settings.service_role_key" = '<service-role-key>';
--- (Reconnect required for the settings to take effect. Prefer setting these
--- via Supabase Dashboard > Database > Custom Postgres Config, or use the
--- Dashboard's "Scheduled Webhooks" UI instead of embedding the key here.)
-create extension if not exists pg_net;
+create or replace function dispatch_due_webhooks()
+returns void security definer set search_path = public as $$
+declare
+  v_url text := nullif(current_setting('app.settings.supabase_url', true), '');
+  v_key text := nullif(current_setting('app.settings.service_role_key', true), '');
+begin
+  if v_url is not null and v_key is not null then
+    perform net.http_post(
+      url := v_url || '/functions/v1/dispatch-webhook',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'Authorization', 'Bearer ' || v_key
+      ),
+      body := jsonb_build_object('mode', 'retry_outbox'),
+      timeout_milliseconds := 25000
+    );
+  end if;
+end;
+$$ language plpgsql;
 
 select cron.schedule('dispatch-due-webhooks', '* * * * *',
-  $$
-  select net.http_post(
-    url := current_setting('app.settings.supabase_url') || '/functions/v1/dispatch-webhook',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || current_setting('app.settings.service_role_key')
-    ),
-    body := jsonb_build_object('mode', 'retry_outbox'),
-    timeout_milliseconds := 25000
-  );
-  $$);
+  $$select dispatch_due_webhooks()$$);
 
